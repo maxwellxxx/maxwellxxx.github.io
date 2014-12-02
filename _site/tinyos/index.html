@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <!--
+    * Author:         BeiYuu
+    -->
+    <meta charset="utf-8" />
+    <title>Ubuntu 下Tinyos开发环境的搭建 | maxwellxxx's Blog</title>
+    <meta name="author" content="maxwellxxx" />
+    <meta name="renderer" content="webkit">
+    <meta name="description" content="maxwellxxx's Blog" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0">
+    <link rel="stylesheet" href="/css/default.css" type="text/css" />
+    <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
+    <link rel="alternate" type="application/atom+xml" title="Recent Entries" href="/atom.xml" />
+    <script src="/js/jquery-1.7.1.min.js" type="text/javascript"></script>
+</head>
+<body>
+
+    <div class="home-menu">
+        <div class="home-icon-con">
+            <a class="home-menu-icon" href="/">maxwellxxx</a>
+            <a class="home-follow" href="#" title="Contact Me">+</a>
+        </div>
+        <div class="home-contact">
+            <a href="http://weibo.com/u/1863312387" target="_blank" style="margin-left:-5px;"><img src="http://www.weibo.com/favicon.ico" alt="" width="25"/></a>
+        </div>
+    </div>
+
+    <link rel="stylesheet" href="/js/prettify/prettify.css" />
+<style type="text/css">
+    body { background:#e8e8e8; }
+    @media screen and (max-width: 750px){
+        body { background:#fff; }
+    }
+    @media screen and (max-width: 1020px){
+        body { background:#fff; }
+    }
+</style>
+
+<div id="content">
+    <div class="entry">
+        <h1 class="entry-title"><a href="/tinyos" title="Ubuntu 下Tinyos开发环境的搭建">Ubuntu 下Tinyos开发环境的搭建</a></h1>
+        <p class="entry-date">2014-12-02</p>
+        <p>Tinyos是什么就不讲了……好多资料里都是在Cygwin下做开发的，总之就是很不爽啦！文件拷贝来拷贝去，各种环境变量……既然是linux下的开发就应该原汁原味，虚拟机什么的速度太慢了，大大影响开发心情！</p>
+
+<p>好的，正式开始：</p>
+
+<h2>安装开发工具链</h2>
+
+<h3>1、卸载先前的相关软件包（如果以前没有装过，请忽略）</h3>
+
+<p>卸载很简单啦：</p>
+
+<ul>
+    <li>Remove previously installed *-tinyos packages:</li>
+</ul>
+
+
+<pre><code>$ sudo dpkg -P `dpkg -l nesc '*tinyos*' | grep ^ii | awk '{ print $2 }' | xargs`
+$ sudo apt-get clean
+</code></pre>
+
+<h3>2、添加坑爹的软件源并安装</h3>
+
+<p>这个软件软真的非常坑，国内网速奇慢无比，我一般装完整个工具链要3个小时……</p>
+
+<ul>
+    <li>Tell apt about the TinyProd Signing Key:</li>
+</ul>
+
+
+<pre><code>$ gpg --keyserver keyserver.ubuntu.com --recv-keys A9B913B9
+$ gpg -a --export A9B913B9 | sudo apt-key add -
+</code></pre>
+
+<ul>
+    <li>Add the following lines to /etc/apt/sources.list.d/tinyprod-debian.list:</li>
+</ul>
+
+
+<pre><code>$ deb http://tinyprod.net/repos/debian wheezy main
+$ deb http://tinyprod.net/repos/debian msp430-46 main
+</code></pre>
+
+<p>如果仅仅添加这两个源一般都会安装出问题，所以最好再添加国内大学的某个源，以解决依赖问题：</p>
+
+<pre><code>$ deb http://hinrg.cs.jhu.edu/tinyos oneiric main
+</code></pre>
+
+<p>最后更新、安装：</p>
+
+<pre><code>$ sudo apt-get update
+$ sudo apt-get install nesc tinyos-tools msp430-46 avr-tinyos
+</code></pre>
+
+<p>安装的时候可以看好自己的开发芯片……如果是micaz仅安装avr-tinyos就妥了。
+这样就大致OK啦！接下来……</p>
+
+<h2>下载源码包，并配置环境变量</h2>
+
+<p>下载的话可以直接下载官方的压缩包就可以了。
+地址：<a href="http://github.com/tinyos/tinyos-release/archive/tinyos-2_1_2.tar.gz" title="tinyos2.1.2源码包">http://github.com/tinyos/tinyos-release/archive/tinyos-2_1_2.tar.gz</a></p>
+
+<p>解压…………</p>
+
+<p>接下来在源码根目录下创建文件env.sh内容如下：</p>
+
+<pre><code># Here we setup the environment
+# variables needed by the tinyos 
+# make system
+
+export TOSROOT=$PWD
+export TOSDIR="$TOSROOT/tos"
+export CLASSPATH=$CLASSPATH:$TOSROOT/support/sdk/java/tinyos.jar
+export MAKERULES="$TOSROOT/support/make/Makerules"
+export PYTHONPATH=$PYTHONPATH:$TOSROOT/support/sdk/python
+
+echo "setting up TinyOS on source path $TOSROOT"
+</code></pre>
+
+<p>保存，修改权限并运行：</p>
+
+<pre><code>$ sudo chmod +x env.sh
+$ source ./env.sh
+$ sudo source ./env.sh (如果要烧写程序的话)
+</code></pre>
+
+<p>这样的话，基本的开发环境就搭建好了！后续更新tinyos目录结构分析，以及CTP协议源代码详解。</p>
+
+    </div>
+
+    <div class="sidenav">
+        <iframe width="100%" height="75" class="share_self"  frameborder="0" scrolling="no" src="http://widget.weibo.com/weiboshow/index.php?language=&width=0&height=75&fansRow=2&ptype=1&speed=0&skin=5&isTitle=0&noborder=0&isWeibo=0&isFans=0&uid=1863312387&verifier=996dff3a&dpc=1"></iframe>
+    </div>
+
+    <div class="sidenav">
+        <h2>Blog</h2>
+        <ul class="artical-list">
+        
+            <li><a href="/newstory">新的故事</a></li>
+        
+        </ul>
+
+        <h2>My Manual</h2>
+        <ul class="artical-list">
+        
+            <li><a href="/Linux-Unix">Linux/Unix系统编程</a></li>
+        
+        </ul>
+
+        <h2>Project</h2>
+        <ul class="artical-list">
+        
+            <li><a href="/tinyos">Ubuntu 下Tinyos开发环境的搭建</a></li>
+        
+            <li><a href="/github-pages">使用Github Pages建独立博客</a></li>
+        
+        </ul>
+    </div>
+</div>
+
+<script src="/js/post.js" type="text/javascript"></script>
+
+
+    <script type="text/javascript">
+        $(function(){
+            $('.home-follow').click(function(e){
+                e.preventDefault();
+
+                if($('.home-contact').is(':visible')){
+                    $('.home-contact').slideUp(100);
+                }else{
+                    $('.home-contact').slideDown(100);
+                }
+            });
+        })
+    </script>
+</body>
+</html>
