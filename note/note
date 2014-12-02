@@ -1,0 +1,15 @@
+从上面可以看得出来CocoaPods是Ruby做的，不过没有这个错误经验的人只从“非法的ASCII字节顺序”提示完全不知道解决方案可能是什么。
+
+其实，方法很简单，就是修改终端的语言、地区等国际化相关环境变量，只要重新导出这3个变量即可。
+
+export LANG=en_US.UTF-8  export LANGUAGE=en_US.UTF-8  export LC_ALL=en_US.UTF-8
+
+
+
+git clone git@github.com:heiniuhaha/heiniuhaha.github.com.git//本地如果无远程代码，先做这步，不然就忽略
+cd .ssh/heiniuhaha.github.com//定位到你blog的目录下
+git pull origin master //先同步远程文件，后面的参数会自动连接你远程的文件
+git status //查看本地自己修改了多少文件
+git add .//添加远程不存在的git文件
+git commit * -m "what I want told to someone"
+git push origin master //更新到远程服务器上
