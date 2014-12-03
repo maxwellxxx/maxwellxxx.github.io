@@ -124,7 +124,7 @@ whence参数指定由哪个基点来解释offset
 
 ##深入文件I/O
 
-##文件控制操作fcntl()(系统调用)
+###文件控制操作fcntl()(系统调用)
 
 	#include<fcntl.h>
 	int fcntl(int fd,int cmd,...);
