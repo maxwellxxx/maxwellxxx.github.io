@@ -43,7 +43,8 @@
         <h1 class="entry-title"><a href="/Linux-Unix" title="Linux/Unix系统编程">Linux/Unix系统编程</a></h1>
         <p class="entry-date">2014-12-02</p>
         <p>开始各种填坑，不过决定以后要为每本书都开个坑，以前的书也要开个小坑………总之这个博客就是个大月亮！！！
-<img src="/images/manual/moon.jpg" alt="moon" /></p>
+<img src="/images/manual/moon.jpg" alt="moon" />
+不过这篇真的是个正经的存在，我会乱讲？？！！</p>
 
 <p>来吧……</p>
 
@@ -379,7 +380,7 @@ int clearenv(void);
 </ul>
 
 
-<h2>执行非局部跳转命令setjmp()&amp;longjmp()(库函数)</h2>
+<h3>执行非局部跳转命令setjmp()&amp;longjmp()(库函数)</h3>
 
 <ul>
     <li>“非局部”是指跳转的目标为当前执行函数之外的某个位置。</li>
@@ -504,7 +505,96 @@ void *alloca(size_t size);
 </ul>
 
 
+<h2>用户和组</h2>
 
+<h3>获取用户和组的信息</h3>
+
+<h4>从密码文件/etc/passpw获取记录getpwnam()&amp;getpwuid()(库函数)</h4>
+
+<pre><code>#include &lt;pwd.h&gt;
+struct passwd *getpwnam(const char *name);
+struct passwd *getpwuid(uid_t uid);
+    return pointer -SUC,NULL-ERR
+</code></pre>
+
+<p>为name提供一个登录名，或者为uid提供一个用户ID。返回一个数据结构：</p>
+
+<pre><code>struct passwd
+{
+    char *pw_name;  //Login name
+    char *pw_passwd //Encrypted password
+    uid_t pw_uid;   //User ID
+    gid_t pw_gid;   //Group ID
+    char *pw_gecos; //comment (user information)
+    char *pw_dir;   //initial working directory(home)
+    char *pw_shell; //Login shell
+}
+</code></pre>
+
+<p>当没有开启shadow密码的情况下，pw_passwd才会包含有效信息。</p>
+
+<ul>
+    <li>注意，这里返回的指针都指向一个静态分配的结构，所以任何一次调用都会改写该数据结构！！！！</li>
+    <li>所以这两个函数都是不可以重入的</li>
+</ul>
+
+
+<h4>从组文件/etc/group获取记录getgrnam()&amp;getgrgid()(库函数)</h4>
+
+<pre><code>#include &lt;grp.h&gt;
+struct group *getgrnam(const char *name);
+struct group *getgrgid(gid_t gid);
+    return pointer -SUC,NULL-ERR
+</code></pre>
+
+<p>两者通过组名和组ID来返回一个数据结构指针：</p>
+
+<pre><code>struct group
+{
+    char *gr_name;
+    char *gr_passwd;
+    gid_t gr_gid;
+    char **gr_mem;      //menbers in this group listed in /etc/group
+}
+</code></pre>
+
+<ul>
+    <li>两者返回的指针同样指向一个静态分配的结构，任何一次调用都会改写数据。</li>
+    <li>两者不可重入</li>
+</ul>
+
+
+<h4>扫描密码文件和组文件中的所有记录(库函数)</h4>
+
+<p>这里是一组函数配合使用</p>
+
+<pre><code>#include &lt;pwd.h&gt;
+struct passwd *getpwent(void);
+    return pointer-SUC,NULL or end of stream-ERR
+void setpwent(void);
+void endpwent(void);
+</code></pre>
+
+<p>getpwent()会从密码文件中逐条返回记录，如果出错或到末尾，返回NULL。一经调用就自动打开密码文件，处理结束后需要调用endpwent()关闭。在处理文件中途，可以调用setpwent()返回到文件起始处。</p>
+
+<p>相同的还有从组文件中扫描：</p>
+
+<pre><code>#include &lt;shadow.h&gt;
+struct group* getgrent(void);
+    return pointer-SUC,NULL or end of stream-ERR
+void setgrent(void);
+void endgrent();
+</code></pre>
+
+<p>同上面一组函数。</p>
+
+<ul>
+    <li>注意，这两组返回的指向数据结构也是静态分配的！！！</li>
+    <li>所以，每次调用getpwnam(),getpwuid(),getpwent()其中一个，都会改变数据结构!!group系的函数同理!!</li>
+</ul>
+
+
+<h4>从shadow密码文件中获取记录(库函数)</h4>
 
     </div>
 

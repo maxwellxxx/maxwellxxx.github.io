@@ -7,6 +7,7 @@ category: manual
 
 开始各种填坑，不过决定以后要为每本书都开个坑，以前的书也要开个小坑………总之这个博客就是个大月亮！！！
 ![moon](/images/manual/moon.jpg)
+不过这篇真的是个正经的存在，我会乱讲？？！！
 
 来吧……
 
@@ -303,7 +304,7 @@ string指向name=value字符串，由于只是将environ中一个元素指向str
 </ul>
 
 
-##执行非局部跳转命令setjmp()&longjmp()(库函数)
+###执行非局部跳转命令setjmp()&longjmp()(库函数)
 
 <ul>
 	<li>“非局部”是指跳转的目标为当前执行函数之外的某个位置。</li>
@@ -415,4 +416,83 @@ size指定要在栈上分配的内存大小,通过它分配的内存。
 
 
 
+##用户和组
 
+###获取用户和组的信息
+
+####从密码文件/etc/passpw获取记录getpwnam()&getpwuid()(库函数)
+
+	#include <pwd.h>
+	struct passwd *getpwnam(const char *name);
+	struct passwd *getpwuid(uid_t uid);
+		return pointer -SUC,NULL-ERR
+
+为name提供一个登录名，或者为uid提供一个用户ID。返回一个数据结构：
+
+	struct passwd
+	{
+		char *pw_name;	//Login name
+		char *pw_passwd	//Encrypted password
+		uid_t pw_uid;	//User ID
+		gid_t pw_gid;	//Group ID
+		char *pw_gecos;	//comment (user information)
+		char *pw_dir;	//initial working directory(home)
+		char *pw_shell;	//Login shell
+	}
+
+当没有开启shadow密码的情况下，pw_passwd才会包含有效信息。
+<ul>
+	<li>注意，这里返回的指针都指向一个静态分配的结构，所以任何一次调用都会改写该数据结构！！！！</li>
+	<li>所以这两个函数都是不可以重入的</li>
+</ul>
+
+####从组文件/etc/group获取记录getgrnam()&getgrgid()(库函数)
+
+	#include <grp.h>
+	struct group *getgrnam(const char *name);
+	struct group *getgrgid(gid_t gid);
+		return pointer -SUC,NULL-ERR
+
+两者通过组名和组ID来返回一个数据结构指针：
+	
+	struct group
+	{
+		char *gr_name;
+		char *gr_passwd;
+		gid_t gr_gid;
+		char **gr_mem;		//menbers in this group listed in /etc/group
+	}
+
+<ul>
+	<li>两者返回的指针同样指向一个静态分配的结构，任何一次调用都会改写数据。</li>
+	<li>两者不可重入</li>
+</ul>
+
+####扫描密码文件和组文件中的所有记录(库函数)
+
+这里是一组函数配合使用
+
+	#include <pwd.h>
+	struct passwd *getpwent(void);
+		return pointer-SUC,NULL or end of stream-ERR
+	void setpwent(void);
+	void endpwent(void);
+
+getpwent()会从密码文件中逐条返回记录，如果出错或到末尾，返回NULL。一经调用就自动打开密码文件，处理结束后需要调用endpwent()关闭。在处理文件中途，可以调用setpwent()返回到文件起始处。
+
+相同的还有从组文件中扫描：
+
+	#include <shadow.h>
+	struct group* getgrent(void);
+		return pointer-SUC,NULL or end of stream-ERR
+	void setgrent(void);
+	void endgrent();
+
+同上面一组函数。
+
+<ul>
+	<li>注意，这两组返回的指向数据结构也是静态分配的！！！</li>
+	<li>所以，每次调用getpwnam(),getpwuid(),getpwent()其中一个，都会改变数据结构!!group系的函数同理!!</li>
+</ul>
+
+####从shadow密码文件中获取记录(库函数)
