@@ -124,7 +124,7 @@ whence参数指定由哪个基点来解释offset
 
 ##深入文件I/O
 
-##文件控制操作fcntl()(系统调用)
+###文件控制操作fcntl()(系统调用)
 
 	#include<fcntl.h>
 	int fcntl(int fd,int cmd,...);
@@ -135,6 +135,7 @@ cmd参数支持的操作很多,这里逐步加吧,后三个省略号根据cmd来
 	cmd:
 	F_GETFL   获取访问访问模式和状态标志
 	F_SETFL   修改文件某些状态标志,允许修改的有O_APPEND,O_NONBLOCK,O_NOATIME,O_ASYNC,O_DIRECT.修改其他会被系统忽略
+	F_DUPFD   复制文件操作符。
 	
 F_GETFL返回的flags如果用于判断访问模式会有些复杂,原因是那三个常量不与状态标志位中的单个比特位对应,要用掩码O_ACCMODE与返回的flags相与.示例:
 
@@ -159,5 +160,212 @@ F_GETFL返回的flags如果用于判断访问模式会有些复杂,原因是那�
 
 	#include<unistd.h>
 	int dup2(int oldfd,int newfd);
+	retrun new fd -SUC,-1-ERR
 	
+这个函数基本同上个函数，但是会返回个一由newfd指定的文件描述符编号，如果指定的描述符已经打开，那此函数会先隐式的将它关闭……并且忽略关闭时的错误。更好的编码方式是在调用此函数前先显示调用close将newfd关闭。
+	
+	//另外一种灵活的方法复制文件描述符
+	newfd=fcntl(oldfd,F_DUPFD,startfd);
+	/*为oldfd创建副本，并且分配大于等于startfd且未使用的最小newfd。
+	*/
+
+复制的newfd与oldfd享有同一个打开文件句柄，文件偏移量，状态标志。然而newfd拥有自己一套文件描述符标志，且其close-on-exec处于关闭。
+
+关于文件描述符号的分配等问题，将另外讨论。
+
+	#include <unistd.h>
+	int dup3(int oldfd,int newfd,int flags);
+	retrun new fd -SUC,-1-ERR
+
+dup3完成的工作与dup2相同，但是可以指定flags，但是只支持O_CLOEXEC。这将促使内核为新的文件描述符设置close-on-exec位。
+
+###在文件特定偏移量处I/O：pread()和pwrite()(系统调用)
+
+	#include <unistd.h>
+	ssize_t pread(int fd,void *buf,size_t count,off_t offset);
+		return number of bytes read,0-EOF,-1-ERR
+	ssize_t pwrite(int fd,const void *buf,size_t count,off_t offset);
+		return number of bytes written,-1-ERR
+
+我们知道进程下所有线程共用一个文件描述符表，这两个函数可以在多线程对同一个文件I/O时避免受其他线程修改offset影响。
+<ul>
+	<li>这两个函数会在指定的offset偏移处进行操作，而且不改变当前偏移量。</li>
+</ul>
+
+###分散输入和集中输出readv()&writev()(系统调用)
+
+	#include <sys/uio.h>
+	ssize_t readv(int fd,const strcut iovec *iov,int iovcnt);
+		return number of bytes read,0-EOF,-1-ERR
+	ssize_t writev(int fd,const strcut iovec *iov,int iovcnt);
+		return number of bytes written,-1-ERR
+
+这两个系统调用用于一次传输多个缓冲区的数据。每组iov定义了一组用于传输的数据。iovcnt则指定了iov的个数。
+
+	struct iovec
+	{
+		void *iov_base;		//start addr of buffer
+		size_t iov_len;		//number of bytes to transfer to/from buffer
+	}
+
+readv()实现了从fd读取一片连续的数据，然后将其分散放置在iov指定区域里。这一动作从iov[0]开始一次填满每个缓冲。writev()则实现相反的动作
+<ul>
+	<li>这两个函数是atom的，即所与操作一个次性完成。即不受其他线程改变偏移量影响。</li>
+	<li>这两个函数会改变文件偏移量。</li>
+</ul>
+
+###截断文件truncate()&ftruncate()(系统调用)
+
+	#include <unistd.h>
+	int truncate(const char *pathname,off_t length);
+	int ftruncae(int fd,off_t length);
+
+若文件当前长度大于参数lengtg，调用丢弃超出部分，如果小于length则在文件末添加一些列空字节或形成文件空洞。
+
+###创建临时文件mkstemp()(库函数)
+
+	#include <stdlib.h>
+	int mkstemp(char *template)
+		return fd-SUC,-1-ERR
+
+参数为路径名形式，但是最后六个字符一定要是XXXXXX，因为这六个字符会被替换成。
+<ul>
+	<li>因为会对传入的参数进行修改，所以必须为字符数组，而非字符串常量。</li>
+	<li>文件拥有者对建立的文件有读写权限（使用了O_EXCL），其他用户没有权限。</li>
+	<li>在调用成功后，应该立即使用unlink(template)，以便在关闭后自动删除临时文件。</li>
+</ul>
+
+	#include<stdio.h>
+	FILE *tmpfile(void);
+		return file pointer-SUC,-1-ERR
+
+创建一个名称唯一的临时文件，并使用O_EXCL，防止冲突。返回文件流供stdio库函数使用。文件流关闭后将自动删除文件。即隐式调用unlink()。
+
+
+
+
+
+##进程
+
+###获取(父)进程号getpid()&getppid()(系统调用)
+
+	#include <unistd.h>
+	pid_t getpid(void);
+	pid_t getppid(void);
+		always SUC
+
+###访问和修改环境变量(库函数)
+
+	#include <stdlib.h>
+	char *getenv(const char *name);
+		return pointer to value,NULL-no such variable
+从环境变量里检索单个之，传入环境变量名，返回相应的字符串指针。（返回name=value 的value部分。）
+<ul>
+	<li>也可以在程序中使用全局变量的形式访问 extern char **environ</li>
+	<li>环境变量的修改会被以后创建的子进程可见，即环境变量也是一种进程乃至程序通讯方法。</li>
+</ul>
+
+	#include <stdlib.h>
+	int putenv(char *string);
+		return 0-SUC,nonzero-ERR
+
+string指向name=value字符串，由于只是将environ中一个元素指向string，所以string不应该是在栈中分配的字符串，而且以后修改string也将影响环境变量。
+
+	#iclude <stdlib.h>
+	int setenv(const char *name,const char *value,int overwrite);
+		return 0-SUC,-1-ERR
+
+函数为形如name=value的字符串分配一块内存缓冲，并将name和value所指的字符串复制到缓冲。如果name已经存在，且overwrite为0則不改变，如果为1则改变。
+<ul>
+	<li>name中不应该有‘=’号。</li>
+</ul>
+
+	#include <stdlib.h>
+	int unsetenv(const char *name);
+		return 0-SUC,-1-ERR
+
+移除name标识的环境变量。
+
+当为了以安全方式执行set-user-ID程序时，可能需要清空环境变量以重建。这是可以使用将全局变量environ设为NULL。
+
+	extern char **environ;
+	environ=NULL:
+
+也可以使用以下函数
+	
+	#define _BSD_SOURCE
+	#include <stdlib.h>
+	int clearenv(void);
+		return 0-SUC,-1-ERR
+
+<ul>
+	<li>使用setenv()和clearenv()可能导致内存泄露，当使用setenv()时会分配内存，clearenv()时则不知道已经分配内存，所以不会释放，从而导致内存泄露。所以一般都在程序开始执行clearenv()，用于移除从父进程继承的环境变量。</li>
+</ul>
+
+
+##执行非局部跳转命令setjmp()&longjmp()(库函数)
+
+<ul>
+	<li>“非局部”是指跳转的目标为当前执行函数之外的某个位置。</li>
+</ul>
+C语言中的goto语句存在一个限制，即不能从当前的函数跳转到另一个函数。但是考虑到在错误处理时可能出现这样的场景：
+<ul>
+	<li>在一个深层嵌套的调用的函数中发生了错误，需要放弃当前任务，从多层函数调用中返回，并在更层级的函数中继续执行。甚至是在main()函数中。</li>
+</ul>
+
+那么可以使用如下的函数：
+
+	#include <setjmp.h>
+	int setjmp(jmp_buf env);
+		return 0-initial call,nonzero-return via longjmp()
+	void longjmp(jmp_buf env,int val);
+
+setjmp()的调用为后续的longjmp()执行的跳转确立了跳转目标。该目标为程序发起setjmp()调用的位置。通过查看setjmp()的返回值，可以知道是第一次调用setjmp()返回，还是后续调用了longjmp()的伪返回。初始返回值为0,后续“伪”返回值为longjmp中val参数指定的任意值。根据返回值的不同，可以区分出跳转到同一目标的不同起跳位置。
+
+<ul>
+	<li>longjmp的val参数如果指定为0,实际执行时会替换成1。</li>
+</ul>
+
+而参数env为成功跳转的粘合剂，setjmp()函数把当前进程环境的各种信息保存到env中，调用longjmp时必须制定相同的env，一次来执行“伪”返回。由于两次调用在不同的函数（不然可以使用goto），所以env最好为全局变量。
+<ul>
+	<li>env除了保存了进程信息外，还保存了ip，和esp寄存器。其实是通过这两个值来实现返回的。</li>
+</ul>
+
+不要滥用！！！！！！！
+还有要注意编译器优化的问题带啦的代码重组。
+
+
+
+
+
+##内存分配
+
+###分配堆上内存
+
+所谓的堆，其实就是一段长度可变的连续虚拟内存。通常始于进程未初始化数据段末尾。随着内存的分配和释放增减，通常将堆的内存边界成为“program break”。
+
+###调整program break brk()&sbrk()(系统调用)
+
+	#include <unistd.h>
+	int brk(void *end_data_segment);
+		return 0-SUC,-1-ERR
+	void *sbrk(intptr_t increment);
+		return previous pb-SUC,-1-ERR
+
+brk()会将pk设为end_data_segment指定位置，由于虚拟内存按页分配，所以会四舍五人到下一个内存边界。
+
+sbrk()会将pk在原有的基础上增加increment。sbrk()会返回前一个pk地址，那么如果pk增加，返回的是增加的内存的起始地址。
+
+	sbrk(0)//返回当前的pk，而不做改变。
+
+###在堆上分配内存
+
+	
+
+
+
+
+
+
+
 
