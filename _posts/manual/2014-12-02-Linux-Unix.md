@@ -496,3 +496,48 @@ getpwent()会从密码文件中逐条返回记录，如果出错或到末尾，�
 </ul>
 
 ####从shadow密码文件中获取记录(库函数)
+
+下列函数作用基本同上！从shadow返回个别记录或者扫描返回记录。
+
+	#include <shadow.h>
+	struct spwd* getspwnam(const char *name);
+		return pointer-SUC,NULL-ERR
+	strcut spwd* getspent(void);
+		return pointer-SUC,NULL or end of stream-ERR
+	void setspent(void);
+	void endspent(void);
+
+类似与上面函数，返回结构体也为静态分配。
+
+	strcut spwd
+	{
+		char *sp_namp;	//login name
+		char *sp_pwdp;	//encrypted password
+		long sp_lstchg;	//Time of last password change(days since 1970.1.1)
+		long sp_min;	
+		long sp_max;
+		long sp_warn;
+		long sp_inact;
+		long sp_expire;
+		unsigned long sp_falg;
+	}
+<ul>
+	<li>访问shadow必须为root或者shadow组用户，不然会出权限错误。</li>
+</ul>
+###密码加密和用户认证(系统调用)
+
+由于UNIX系统密码采用单向加密，所以无法通过加密过的密码来还原原始密码，所以认证方式是将待验证密码加密于/etc/shadow中的密码进行匹配。加密方法封装在crypt()。
+
+	#define _XOPEN_SOURCE
+	#include <unistd.h>
+	char *crypt(const char *key,const char *salt);
+		return pointer to encrypted password-SUC,-1-ERR
+
+key为要加密的密码，salt为指向2个字符的字符串，用于搅动DES加密算法（保证安全性）。（S盒变换么……轻喷）。返回加密后的字符串指针。
+<ul>
+	<li>返回的字符串为静态分配，请注意！</li>
+	<li>在返回的字符串中，前两个字符是对salt的拷贝，也就是说，如果要比对shadow中的密码，salt的值就是shadow中密码的前两个字符！</li>
+	<li>在linux中如果要使用crypt()需要开启-lcrypt编译选项，以便链接crypt库。</li>
+	<li>在完成加密后，应该尽快释放明文密码。</li>
+</ul>
+
