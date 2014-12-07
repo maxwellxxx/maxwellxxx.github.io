@@ -541,3 +541,164 @@ key为要加密的密码，salt为指向2个字符的字符串，用于搅动DES
 	<li>在完成加密后，应该尽快释放明文密码。</li>
 </ul>
 
+
+
+
+
+##进程凭证
+
+每个进程都有一套数字用于表示用户的ID（UID）和组ID（GID），有时，也将这些ID称之为进程凭证，具体如下：
+<ul>
+	<li>实际用户ID（real user ID）和实际组ID（real gourp ID）</li>
+	<li>有效用户ID（effective user ID）和有效组ID（effective group ID）</li>
+	<li>保存的set-user-ID（saved set-user-ID）和保存的set-group-ID（seved set-group-ID）</li>
+	<li>文件系统用户ID（file-system User ID）和文件系统组ID（file-system Group ID）（linux 专有）</li>
+	<li>辅助组ID</li>
+</ul>
+在/proc/PID/status文件中会按照实际、有效、保存、文件系统的顺序将这些ID列出来。
+
+这里解释各个的含义：
+<ul>
+	<li>实际ID:即运行当前程序的用户ID以及用户所在的组ID</li>
+	<li>有效ID:即当前运行程序实际拥有哪个用户ID和组ID的权限</li>
+	<li>set-user-ID程序会将进程的有效ID置成可执行文件的属主用户ID，set-group-id同理。</li>
+	<li>保存的set-user-ID和保存的set-group-id在程序初始化时有有效id复制过来，无论当前程序是否是一个set-user（group）-id程序。</li>
+	<li>文件系统ID基本等同于相应的有效ID</li>
+	<li>辅助组ID一般都从父进程继承。</li>
+</ul>
+这里需要注意的是：
+<ul>
+	<li>在Linux中，set-user-id和set-group-id权限位对shell脚本不适用，理由见详细分析。</li>
+</ul>
+可用下列命令为可执行程序加上set-user-id和set-group-id权限位：
+
+	$ su
+	# ls -l example
+	-rwxr-xr-x	1 root 		root
+	#chmod u+s example       //加上set-user-id权限位
+	# ls -l example
+	-rwsr-xr-x	1 root 		root
+	#chmod g+x example	 //加上set-group-id权限位
+	# ls -l example
+	-rwsr-sr-x	1 root 		root
+	
+其他的另见详细分析。
+
+###获取和修改进程凭证
+
+TIPS：Linux将超级用户划分成各种不同的能力，其中包括：
+<ul>
+	<li>CAP_SETUID能力允许进程任意修改其用户ID。</li>
+	<li>CAP_SETGID能力允许进程任意修改起组ID</li>
+</ul>
+
+####获取和修改实际、有效和保存设置的标识（系统调用）
+
+获取实际和有效ID
+	
+	#include <unistd.h>
+	uid_t getuid(void);
+		return real user ID of calling process
+	gid_t getgid(void);
+		return real group ID of calling process
+	uid_t geteuid(void);
+		return effective user id of calling process
+	gid_t getegid(void);
+		return effective group id of calling process
+
+修改有效ID
+	
+	#include <unistd.h>
+	int setuid(uid_t uid);
+	int setgid(gid_t gid);
+		return 0-SUC,-1-ERR
+
+setuid()会根据给出的uid参数值来修改调用进程的有效用户ID，也可能会修改实际用户ID和保存set-user-id。系统调用setgid()实现了相似的功能。
+
+另外两个函数遵守如下规则
+<ul>
+	<li>规则1：当非特权进程调用时，仅能修改进程的有效ID，而且仅能将有效ID修改成相应的实际用户ID或者保存的set-user-id。那么这就意味着，对于非特权用户只有执行一个set-user-id程序是，函数才有实际的意义。</li>
+	<li>规则2：当特权级进程以一个非0的参数调用函数时，其实际、有效、保存ID都会被置为指定的值，而且这一操作是单项的，一旦特权级进程以此方式修改了ID，那么所有的特权全部丢失，且不可逆。如果要避免这些情况，可使用seteuid(),setegid()。</li>
+</ul>
+对于规则2：如果是调用setgid()不会造成特权丢失，因为特权有userid决定。
+
+对一个特权进程来说，永久放弃特权做法如下：
+
+	if(setuid(getuid())==-1)
+		errExit(setuid);
+
+进程能够使用seteuid()来修改其有效用户ID，或者setegid()来修改有效组ID：
+
+	#include <unistd.h>
+	int seteuid(uid_t uid);
+	int setegid(gid_t gid);
+		return 0-SUC,-1-ERR
+
+这两个函数遵循如下规则：
+<ul>
+	<li>规则1：当非特权进程调用时，仅能将有效ID修改成实际或者保存的ID。</li>
+	<li>规则2：当特权级进程调用时，可将有效ID（仅仅修改有效ID）修改为任意值。如果一个特权进程将有效ID修改成非0则会丢失特权，但是可以通过规则1来恢复特权。</li>
+</ul>
+
+例，特权进程放弃进程，并恢复特权：
+
+	euid=geteuid();			//保存euid用以恢复
+	if(seteuid(getuid())==-1)	//丧失特权
+		errExit(seteuid);
+	if(seteuid(euid))		//恢复特权
+		errExit(seteuid);
+		
+####修改实际ID和有效ID
+
+	#include <unistd.h>
+	int setreuid(uid_t ruid,uid_t euid)
+	int setregid(gid_t rgid,gid_t egid)
+		return 0-SUC,-1-ERR
+
+两个函数第一个参数指定新的实际ID，第二个参数指定新的有效ID，如果有一个不想修改，置为-1即可。
+
+两个函数也遵守几个规则：
+<ul>
+	<li>规则1：当非特权进程调用时，仅能将实际Id设为当前实际ID或者有效id，且能将有效ID设为当前实际ID、有效ID或者保存ID。</li>
+	<li>规则2：特权级进程能设置实际ID和有效ID为任意值。</li>
+</ul>
+
+规则3：不管进程特权与否，只要满足下列条件之一，就将保存set-user-id设置为新的有效用户ID
+<ul>
+	<li>ruid不为-1（即设置实际ID，即便是设置为当前值）</li>
+	<li>对于有效ID所设置的值不同于系统调用之前的实际用户ID</li>
+</ul>
+
+####获取实际，有效和保存设置ID（Linux下非标准系统调用）
+
+	#define _GNU_SOURCE
+	#include <unistd.h>
+	
+	int getresuid(uid_t *ruid,uid_t *euid,uid_t *suid);
+	int getresgid(gid_t *rgid,gid_t *egid,gid_t *sgid);
+
+####修改实际，有效和保存设置ID（Linux下非标准系统调用）
+
+太懒了，反正各种都系统都鲜有支持，所以这里不罗列。
+
+###获取和修改文件系统ID（系统调用）
+太懒了，反正Linux这两个功能已经没有用了，所以忽略！
+
+
+###总结
+这里差张表！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！
+
+
+
+
+
+
+##时间
+
+程序一半会关注两种时间：
+<ul>
+	<li>真实时间：度量这一时间的起点有二：一为某个标准点；二为进程生命周期内的某个固定点（通常为程序启动时）。前者为"日历时间"适用于对数据库记录或者文件打上时间戳的程序，后者为“流逝时间”主要针对于需要周期性操作或者定期从外部输入设备进行度量的程序。</li>
+	<li>进程时间：一个进程使用的CPU时间总量，适用于对程序、算法性能的检测和优化。</li>
+</ul>
+
+###日历时间
