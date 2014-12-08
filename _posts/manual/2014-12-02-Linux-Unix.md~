@@ -4,7 +4,7 @@ title: Linux/Unix系统编程
 description: 计划写满500个系统调用和标准库函数的使用方法和注意事项……看能不能坚持吧，笔记这回事，还是习惯纸笔……
 category: manual
 ---
-updated：2014-12-07
+更新于：2014-12-07
 开始各种填坑，不过决定以后要为每本书都开个坑，以前的书也要开个小坑………总之这个博客就是个大月亮！！！
 ![moon](/images/manual/moon.jpg)
 不过这篇真的是个正经的存在，我会乱讲？？！！
@@ -702,3 +702,173 @@ setuid()会根据给出的uid参数值来修改调用进程的有效用户ID，�
 </ul>
 
 ###日历时间
+
+无论地理位置如何，UNIX系统内部对时间的表示方式均以Epoch以来的秒数来度量，即1970年1月1日早上凌晨开始。
+
+系统调用gettimeofday()：
+
+	#include <sys/time.h>
+	int gettimeofday(struct timeval *tv,struct timezone *tz);
+		return 0-SUC，-1-ERR
+
+将日历时间返回到tv指向的缓冲区中。
+	
+	struct timeval
+	{
+		time_t 		tv_sec;
+		suseconds_t 	tv_usec;
+	}
+
+time_t为有符号整型。参数tz是历史遗留产物，调用时设为NULL即可。
+
+系统调用time():
+	
+	#include <time.h>
+	time_t time(time_t *timep);
+		return number of seconds science the Epoch-SUC,-1-ERR
+
+如果timep不为NULL，还会将日历时间返回到timep指向的缓冲中。调用时可以采用简单的调用方式：
+
+	t=time(NULL);
+
+防止timep为无效地址带来的错误。
+
+###时间转换函数
+
+####将time_t转换成可打印的格式
+
+	#include <time.h>
+	char *ctime(const time_t *timep);
+		return pointer to statically allocated string terminated by newline and \0-SUC,NULL-ERR
+
+将time_t指针作为参数传入，返回一个长达26字节的字符串，含标准时间和日期如下所示：
+	
+	Wed Jun   8  14:22:34 2011
+
+字符串已经包含换行和终止符。
+<ul>
+	<li>注意：这里返回的字符串是静态分配的，下一次调用ctime()会将其覆盖。所以函数不能重入。</li>
+	<li>调用ctime(),gmtime().localTime(),asctime()中的任意一个函数，都可能会覆盖有其他函数的返回！</li>
+</ul>
+
+####time_t和分解时间之间的转换
+
+函数gmtime()和localTime()将一个time_t转换成所谓的分解时间。返回的分解时间放在一个经静态分配的结构里。
+
+	#Include <time.h>
+	struct tm *gmtime(const time_t *timep);
+	struct tm *localtime(const time_t *timep);
+		return pointer to statically allocated struct-SUC,NULL-ERR
+
+gmtime()将日历时间转换为一个对应的UTC的分解时间。localtime()需要考虑时区和夏令时，返回对应与系统本地时间的一个分解时间。
+tm的结构如下：
+	
+	struct tm
+	{
+		int tm_sec;	//(0-60)
+		int tm_min;	//(0-59)
+		int tm_hour;	//(0-23)
+		int tm_mday;	//day of the month(1-31)
+		int tm_mon;	//month(0-11)
+		int tm_year;	//year since 1900
+		int tm_wday;	//day of the week(sunday=0)
+		int tm_yday;	//day int the year(0-365,1 Jan=0)
+		int tm_isdst;	//???		
+	}
+
+<ul>
+	<li>注意：这里返回的结构也是静态分配的。</li>
+</ul>
+
+####分解时间和打印格式之间的转换
+
+	#include <time.h>
+	char *asctime(const struct tm *timeptr);
+		return pointer to statically allocated string terminated by newline and \0-SUC,NULL-ERR
+
+返回同ctime()。
+<ul>
+	<li>注意：这里返回的字符串也是静态分配的。</li>
+</ul>
+
+当要吧一个分解时间转换为打印格式时，strftime()可以提供更精确的控制：
+
+	#include <time.h>
+	size_t strftime(char *outstr,size_t maxsize,const char *format,const struct tm *timeptr);
+		return number of bytes placed in outstr(excluding terminating null byte)-SUC,0-ERR
+
+outstr中返回的字符串按照format参数定义的格式做了格式化，MaxSize参数指定了outstr的最大长度，不同于ctime()和asctime(),strftime()返回的字符串不会包含换行符，除非format中本身包含。
+
+如果成功，strftime()返回outstr所指缓冲区的长度，且不包含终止符。如果结果字符串的总长度，含终止空字节，长度超过了Maxsize参数，则返回零，出错，切不能确定outstr中的内容。
+
+格式化表：
+
+稍后补上！！！
+
+###更新系统时钟
+
+一般很少被调用，有时间补上！！！
+
+###进程时间(系统调用)
+
+为了记录的目的，内核把CPU时间分为两个部分：
+<ul>
+	<li>用户CPU时间是在用户模式下执行花费的时间数量。有时也称为虚拟时间，对于程序来说，是它已经得到的CPU时间。</li>
+	<li>系统CPU时间是在内核模式中执行花费的时间数量，这是内核用于系统调用的时间或者代表程序执行其他任务(例如,服务页错误)的时间。</li>
+</ul>
+
+系统调用times(),检索进程时间信息，并把结果返回到buf结构体中
+
+	#include <sys/times.h>
+	clock_t times(struct tms *buf);
+		return number of clock ticks(sysconf(_SC_CLK_TCK))since "arbitrary" time in past on success,or -1-ERR
+
+buf指向的结构如下
+
+	struct tms
+	{
+		clock_t tms_utime;	//User mode CPU times
+		clock_t tms_stime;	//system CPU times by caller
+		clock_t tms_cutime;	//User CPU time of all (wait for) children
+		clock_t tms_cstime;	//system CPU time of all (wait for) children
+	}
+
+tms前两个字段为目前为止的用户时间和系统CPU时间，最后两个是父进程(比如，times的调用者)执行了系统调用wait()的所有已经终止的子京城所使用的CPU时间。
+
+数据类型clock_t是时钟计时单元为单位度量时间的整型值，习惯用于计算tms结构体的4个字段。可以使用sysconf(_SC_CLK_TCK)来获取每秒包含的时钟计时单位，然后用这个数字可以得到秒。
+
+如果成功函数返回自过去的任意点流逝的以时钟计时单位为单位的时间，然而我们不知道这个时间点是什么时候，所以这个返回值唯一的用处是，调用两次后做差，可以得到两次调用间流逝的时间。但是这个时间也是不可靠的，因为clock_t可能溢出后清零。所以可靠的计算流逝时间是调用gettimeofday()做差。
+
+函数clock()提供了一个简单的接口来取得进程时间。
+
+	#include <time.h>
+	clock_t clock(void);
+		return total CPU time used by the calling process measured in CLOCKS_PER_SEC-SUC,-1-ERR
+
+这里返回的结果是计量单位是宏定义CLOCKS_PER_SEC，所以我们需要除这个值才能得到秒数。
+
+clock()返回的时间包括所有子进程使用的CPU时间，但是在LINUX上，不包括！！！！！！！！1
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
