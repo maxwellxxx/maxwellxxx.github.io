@@ -920,9 +920,40 @@ SUSv3规定，针对特定限制，调用sysconf()所获取的值在调用进程
 	int uname(strcut utsname *utsbuf);
 		return 0-SUC,-1-ERR
 
+utsbuf参数指向一个utsname结构
+
+	#define _UTSNAME_LENGTH 65
+	struct utsname
+	{
+		char sysname[_UTSNAME_LENGTH];
+		char nodename[_UTSNAME_LENGTH];
+		char release[_UTSNAME_LENGTH];
+		char version[_UTSNAME_LENGTH];
+		char machine[_UTSNAME_LENGTH];
+	#ifdef _GNU_SOURCE
+		char domainname[_UTSNAME_LENGTH];
+	#endif
+	};
+
+结构中的sysname,release,version,machine字段由内核自动生成。在Linux下/proc/sys/kernel中的三个文件提供了与ustname中sysname,release,version字段相同的信息。
 
 
 
+
+
+##文件I/O缓冲
+
+出于效率的考虑，系统I/O调用（即内核）和标准C语言库I/O函数（即stdio函数）在操作磁盘文件时会对数据进行缓冲。
+
+###文件I/O的内核缓冲：缓冲区高速缓存
+
+read()和write()系统调用在操作磁盘文件时不会直接发起磁盘访问，而是仅仅在用户空间缓冲区和内核缓冲区高速缓存之间复制数据。例如，如下调用将3个字节的数据从用户空间内存传递到内核空间的缓冲区：
+
+	write(fd,"abc",3);
+
+write()随即返回，在后续的某个时刻，内核会将其缓冲区中的数据写入磁盘（即刷新至磁盘）。如果在此调用期间，另一个进程企图读取文件，那么会从内核的缓冲区中提供数据，而不是从文件中读取。
+
+与此同理，读取时内核会从磁盘中读取数据并存到内核缓冲区，read()调用将直接从缓冲区取数据，直至将缓冲区数据取完。这时内核会再从文件中读下一段内容到缓冲区。
 
 
 
