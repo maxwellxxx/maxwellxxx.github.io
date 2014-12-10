@@ -1120,3 +1120,52 @@ fdopen()函数与fileno()功能相反，给定一个文件描述符，函数将�
 
 
 
+
+
+##系统编程概念
+
+以下忽略，见详细分析
+<ul>
+	<li>设备专用文件</li>
+	<li>磁盘和分区</li>
+	<li>文件系统</li>
+	<li>i节点</li>
+	<li>虚拟文件系统（VFS）</li>
+	<li>日志文件系统</li>
+	<li>单根目录层级和挂载点</li>	
+</ul>
+
+###文件系统的挂载和卸载
+
+系统调用mount()和umount()运行特权级进程（CAP_SYS_ADMIN）以挂载或卸载文件系统。
+
+以下三个文件包含了当前已挂载或者可挂载的文件系统信息：
+<ul>
+	<li>/proc/mounts：可查看当前已挂载文件系统的列表。此文件是内核数据结构的接口，所以总是包含已挂载文件系统的精确信息。</li>
+	<li>/etc/mtab：包含的信息和上一个文件类似，只是略微详细一点，特别包含了mount(8)传递给文件系统的专有项，这在上一个文件里没有出现。但是因为系统调用mount()和umount()不更新这个文件，所以这个文件中的内容可能不准确。</li>
+	<li>/etc/fstab：由系统管理员手工维护，包含了对系统支持的所有文件系统的描述，该文件可供mount(8),umount(8)以及fsck(8)使用。</li>
+</ul>
+以上三个文件格式相同，如下所示：
+
+	/dev/sda9 /boot ext3 rw 0 0
+
+<ul>
+	<li>1、已挂载的设备名</li>
+	<li>2、设备的挂载点</li>
+	<li>3、文件系统类型</li>
+	<li>4、挂载标志，如上就是已读写挂载</li>
+	<li>5、一个数字，dump(8)会使用其来控制对文件系统备份。只有/etc/fstab文件中才用的到该字段。</li>
+	<li>6、一个数字，在系统引导时，用于控制fsck(8)对文件系统的检查。</li>
+</ul>
+
+###挂载文件系统mount()(系统调用)
+	
+	#include <sys/mount.h>
+	int mount(const char *source,const char *target,const char *fstype,unsigned long mountflags, const void *data);
+		return 0-SUC,-1-ERR
+	
+mount系统调用用于将由source指定设备包含的文件系统挂载到target指定的目录下。这两个参数命名为source和target的原因是mount除了将文件系统挂载到一目录下，还可以执行其他工作。
+
+参数fstype是一串字符串，用来标识设备所含的文件系统，比如ext4或btrfs。
+
+参数mountflags为掩码
