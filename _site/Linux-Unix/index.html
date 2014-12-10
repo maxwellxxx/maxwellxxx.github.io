@@ -833,6 +833,434 @@ int getresgid(gid_t *rgid,gid_t *egid,gid_t *sgid);
 
 <h3>日历时间</h3>
 
+<p>无论地理位置如何，UNIX系统内部对时间的表示方式均以Epoch以来的秒数来度量，即1970年1月1日早上凌晨开始。</p>
+
+<p>系统调用gettimeofday()：</p>
+
+<pre><code>#include &lt;sys/time.h&gt;
+int gettimeofday(struct timeval *tv,struct timezone *tz);
+    return 0-SUC，-1-ERR
+</code></pre>
+
+<p>将日历时间返回到tv指向的缓冲区中。</p>
+
+<pre><code>struct timeval
+{
+    time_t      tv_sec;
+    suseconds_t     tv_usec;
+}
+</code></pre>
+
+<p>time_t为有符号整型。参数tz是历史遗留产物，调用时设为NULL即可。</p>
+
+<p>系统调用time():</p>
+
+<pre><code>#include &lt;time.h&gt;
+time_t time(time_t *timep);
+    return number of seconds science the Epoch-SUC,-1-ERR
+</code></pre>
+
+<p>如果timep不为NULL，还会将日历时间返回到timep指向的缓冲中。调用时可以采用简单的调用方式：</p>
+
+<pre><code>t=time(NULL);
+</code></pre>
+
+<p>防止timep为无效地址带来的错误。</p>
+
+<h3>时间转换函数</h3>
+
+<h4>将time_t转换成可打印的格式</h4>
+
+<pre><code>#include &lt;time.h&gt;
+char *ctime(const time_t *timep);
+    return pointer to statically allocated string terminated by newline and \0-SUC,NULL-ERR
+</code></pre>
+
+<p>将time_t指针作为参数传入，返回一个长达26字节的字符串，含标准时间和日期如下所示：</p>
+
+<pre><code>Wed Jun   8  14:22:34 2011
+</code></pre>
+
+<p>字符串已经包含换行和终止符。</p>
+
+<ul>
+    <li>注意：这里返回的字符串是静态分配的，下一次调用ctime()会将其覆盖。所以函数不能重入。</li>
+    <li>调用ctime(),gmtime().localTime(),asctime()中的任意一个函数，都可能会覆盖有其他函数的返回！</li>
+</ul>
+
+
+<h4>time_t和分解时间之间的转换</h4>
+
+<p>函数gmtime()和localTime()将一个time_t转换成所谓的分解时间。返回的分解时间放在一个经静态分配的结构里。</p>
+
+<pre><code>#Include &lt;time.h&gt;
+struct tm *gmtime(const time_t *timep);
+struct tm *localtime(const time_t *timep);
+    return pointer to statically allocated struct-SUC,NULL-ERR
+</code></pre>
+
+<p>gmtime()将日历时间转换为一个对应的UTC的分解时间。localtime()需要考虑时区和夏令时，返回对应与系统本地时间的一个分解时间。
+tm的结构如下：</p>
+
+<pre><code>struct tm
+{
+    int tm_sec; //(0-60)
+    int tm_min; //(0-59)
+    int tm_hour;    //(0-23)
+    int tm_mday;    //day of the month(1-31)
+    int tm_mon; //month(0-11)
+    int tm_year;    //year since 1900
+    int tm_wday;    //day of the week(sunday=0)
+    int tm_yday;    //day int the year(0-365,1 Jan=0)
+    int tm_isdst;   //???       
+}
+</code></pre>
+
+<ul>
+    <li>注意：这里返回的结构也是静态分配的。</li>
+</ul>
+
+
+<h4>分解时间和打印格式之间的转换</h4>
+
+<pre><code>#include &lt;time.h&gt;
+char *asctime(const struct tm *timeptr);
+    return pointer to statically allocated string terminated by newline and \0-SUC,NULL-ERR
+</code></pre>
+
+<p>返回同ctime()。</p>
+
+<ul>
+    <li>注意：这里返回的字符串也是静态分配的。</li>
+</ul>
+
+
+<p>当要吧一个分解时间转换为打印格式时，strftime()可以提供更精确的控制：</p>
+
+<pre><code>#include &lt;time.h&gt;
+size_t strftime(char *outstr,size_t maxsize,const char *format,const struct tm *timeptr);
+    return number of bytes placed in outstr(excluding terminating null byte)-SUC,0-ERR
+</code></pre>
+
+<p>outstr中返回的字符串按照format参数定义的格式做了格式化，MaxSize参数指定了outstr的最大长度，不同于ctime()和asctime(),strftime()返回的字符串不会包含换行符，除非format中本身包含。</p>
+
+<p>如果成功，strftime()返回outstr所指缓冲区的长度，且不包含终止符。如果结果字符串的总长度，含终止空字节，长度超过了Maxsize参数，则返回零，出错，切不能确定outstr中的内容。</p>
+
+<p>格式化表：</p>
+
+<p>稍后补上！！！</p>
+
+<h3>更新系统时钟</h3>
+
+<p>一般很少被调用，有时间补上！！！</p>
+
+<h3>进程时间(系统调用)</h3>
+
+<p>为了记录的目的，内核把CPU时间分为两个部分：</p>
+
+<ul>
+    <li>用户CPU时间是在用户模式下执行花费的时间数量。有时也称为虚拟时间，对于程序来说，是它已经得到的CPU时间。</li>
+    <li>系统CPU时间是在内核模式中执行花费的时间数量，这是内核用于系统调用的时间或者代表程序执行其他任务(例如,服务页错误)的时间。</li>
+</ul>
+
+
+<p>系统调用times(),检索进程时间信息，并把结果返回到buf结构体中</p>
+
+<pre><code>#include &lt;sys/times.h&gt;
+clock_t times(struct tms *buf);
+    return number of clock ticks(sysconf(_SC_CLK_TCK))since "arbitrary" time in past on success,or -1-ERR
+</code></pre>
+
+<p>buf指向的结构如下</p>
+
+<pre><code>struct tms
+{
+    clock_t tms_utime;  //User mode CPU times
+    clock_t tms_stime;  //system CPU times by caller
+    clock_t tms_cutime; //User CPU time of all (wait for) children
+    clock_t tms_cstime; //system CPU time of all (wait for) children
+}
+</code></pre>
+
+<p>tms前两个字段为目前为止的用户时间和系统CPU时间，最后两个是父进程(比如，times的调用者)执行了系统调用wait()的所有已经终止的子京城所使用的CPU时间。</p>
+
+<p>数据类型clock_t是时钟计时单元为单位度量时间的整型值，习惯用于计算tms结构体的4个字段。可以使用sysconf(_SC_CLK_TCK)来获取每秒包含的时钟计时单位，然后用这个数字可以得到秒。</p>
+
+<p>如果成功函数返回自过去的任意点流逝的以时钟计时单位为单位的时间，然而我们不知道这个时间点是什么时候，所以这个返回值唯一的用处是，调用两次后做差，可以得到两次调用间流逝的时间。但是这个时间也是不可靠的，因为clock_t可能溢出后清零。所以可靠的计算流逝时间是调用gettimeofday()做差。</p>
+
+<p>函数clock()提供了一个简单的接口来取得进程时间。</p>
+
+<pre><code>#include &lt;time.h&gt;
+clock_t clock(void);
+    return total CPU time used by the calling process measured in CLOCKS_PER_SEC-SUC,-1-ERR
+</code></pre>
+
+<p>这里返回的结果是计量单位是宏定义CLOCKS_PER_SEC，所以我们需要除这个值才能得到秒数。</p>
+
+<p>clock()返回的时间包括所有子进程使用的CPU时间，但是在LINUX上，不包括！！！！！！！！</p>
+
+<h2>系统限制和选项</h2>
+
+<p>但凡UNIX实现，无不对各种系统特性和资源加以限制，SUSv3规定，针对其所规范的每个限制，所有实现都必须支持一个最小值。在大多数情况下，会将这些最小值定义为&lt;limits.h>文件中的常量，其命名则冠以字符串POSIX，而且通常还会包含字符串<em>MAX，因此常量的命名形式如</em>POSIX_XXX_MAX。</p>
+
+<p>每个限制都有一个名称，与上述最小值的名称对应，但确实<em>POSIX前缀。某个实现可以在&lt;limits.h>中以该名字定义一个常量，用于表示该实现的相应限制，若已然定义，则该限制的值至少等于或者大于前述的最大值即(XXX_MAX>=</em>POSIX_XXX_MAX)。</p>
+
+<p>SUSv3将限制归为三类，运行时恒定，路径名变量值和运行时可增加值：</p>
+
+<ul>
+    <li><运行时恒定：指某一限制，若已然在<limits.h>文件中定义，则对于这个实现而言固定不变。然而该值可能是不确定的(因为该值可能会依赖于可用的内存空间),因而在<limits.h>文件中会忽略其定义。在这种情况下，应用程序可以使用sysconf()来获取运行时值。</li>
+    <li>路径变量值：指与路径名（文件、目录、终端）相关的限制，每个限制可能是相对于某个系统实现的常量，也可能随着文件系统的不同而不同。在限制可能因为路径名发生变化的时候变化，这时候可以使用pathconf()或则fpathconf()来获取。</li>
+    <li>运行时可增加值：指某一限制，相对于特定的实现固定，且运行此实现的所有系统至少支持这一值。然而，特定系统在运行是可能会增加该值，应用程序可以使用sysconf()来获取系统支持的实际值。</li>
+</ul>
+
+
+<h3>在运行时获取系统限制(和选项)sysconf()(系统调用)</h3>
+
+<pre><code>#include &lt;unistd.h&gt;
+long sysconf(int name);
+    return value of limit specified by name,-1 if limit is indeterminate or an err.
+</code></pre>
+
+<p>参数name应为定义于&lt;unistd.h>文件中的<em>SC</em>系列常量之一，限制值将作为函数结果返回。</p>
+
+<p>若无法确定某一个限制，则返回-1。但调用发生错误也会返回-1，区分这两中错误的方法是在调用前设置errno为0，如果调用返回-1，但是errno不为0，则是调用错误。</p>
+
+<p>SUSv3规定，针对特定限制，调用sysconf()所获取的值在调用进程的生命期中不会改变。</p>
+
+<p>限制名和<em>SC</em>对比表稍后补上！！！！</p>
+
+<h3>运行时获取文件相关的限制(和选项)pathconf()fpathconf()(系统调用)</h3>
+
+<pre><code>#include &lt;unistd.h&gt;
+long pathconf(const char *pathname,int name);
+long fpathconf(int fd,int name);
+    return value of limit specified by name,-1 if limit is indeterminate or an err.
+</code></pre>
+
+<p>参数name应为定义在&lt;unistd.h>中<em>PC</em>系列的常量之一。错误处理同sysconf()。</p>
+
+<h3>系统选项</h3>
+
+<p>除了对系统的各种资源加以限制外，SUSv3还规定了UNIX实现可支持的各种选项。包括实时信号，POSIX共享内存、任务控制以及POSIX线程之类功能的支持。除了少数特例外，并未要求实现支持这些选项。相反，对于实现在编译及运行时是否支持某个特定特性，允许实现自行给出建议。</p>
+
+<p>通过在&lt;unistd.h>中定义的相应常量，实现能够在编译时通过其对特定SUSv3选项的支持。此类常量通常会冠以(<em>POSIX</em>或者<em>XOPEN</em>)，以表示其源于何种标准。</p>
+
+<p>各个常量一经定义，必须为为下列值之一：</p>
+
+<ul>
+    <li>-1,表示实现不支持该选项。</li>
+    <li>0，表示实现可能支持该选项，需要在应用程序运行时来检查是否获得支持。</li>
+    <li>大于0，则表示支持该选项。</li>
+</ul>
+
+
+<p>如果当常量定义为0时，可以使用sysconf()和pathconf()在运行时检查是否支持。传入的name其命名规则通常与编译时常量形式相同，只是前缀为<em>SC</em>或者<em>PC</em>取代。</p>
+
+<p>表稍后补上！！！</p>
+
+<h2>系统和进程信息</h2>
+
+<p>由于主要讨论了/proc文件系统，放到总结分析去，这里仅仅介绍uname()系统调用。</p>
+
+<h3>系统标识uname()(系统调用)</h3>
+
+<pre><code>#include &lt;sys/utsname.h&gt;
+int uname(strcut utsname *utsbuf);
+    return 0-SUC,-1-ERR
+</code></pre>
+
+<p>utsbuf参数指向一个utsname结构</p>
+
+<pre><code>#define _UTSNAME_LENGTH 65
+struct utsname
+{
+    char sysname[_UTSNAME_LENGTH];
+    char nodename[_UTSNAME_LENGTH];
+    char release[_UTSNAME_LENGTH];
+    char version[_UTSNAME_LENGTH];
+    char machine[_UTSNAME_LENGTH];
+#ifdef _GNU_SOURCE
+    char domainname[_UTSNAME_LENGTH];
+#endif
+};
+</code></pre>
+
+<p>结构中的sysname,release,version,machine字段由内核自动生成。在Linux下/proc/sys/kernel中的三个文件提供了与ustname中sysname,release,version字段相同的信息。</p>
+
+<h2>文件I/O缓冲</h2>
+
+<p>出于效率的考虑，系统I/O调用（即内核）和标准C语言库I/O函数（即stdio函数）在操作磁盘文件时会对数据进行缓冲。</p>
+
+<h3>文件I/O的内核缓冲：缓冲区高速缓存</h3>
+
+<p>read()和write()系统调用在操作磁盘文件时不会直接发起磁盘访问，而是仅仅在用户空间缓冲区和内核缓冲区高速缓存之间复制数据。例如，如下调用将3个字节的数据从用户空间内存传递到内核空间的缓冲区：</p>
+
+<pre><code>write(fd,"abc",3);
+</code></pre>
+
+<p>write()随即返回，在后续的某个时刻，内核会将其缓冲区中的数据写入磁盘（即刷新至磁盘）。如果在此调用期间，另一个进程企图读取文件，那么会从内核的缓冲区中提供数据，而不是从文件中读取。</p>
+
+<p>与此同理，读取时内核会从磁盘中读取数据并存到内核缓冲区，read()调用将直接从缓冲区取数据，直至将缓冲区数据取完。这时内核会再从文件中读下一段内容到缓冲区。</p>
+
+<p>Linux内核对高速缓冲区没有设置上限，仅受限于物理内存的大小。</p>
+
+<ul>
+    <li>内核缓冲的设计旨在减少对磁盘I/O的次数，从而提高效率。</li>
+</ul>
+
+
+<h3>stdio库的缓冲</h3>
+
+<ul>
+    <li>库缓冲的设计旨在缓冲大块数据以减少系统调用的次数。</li>
+    <li>C语言的库I/O函数fprintf(),fscanf(),fgets(),fputs(),fputc(),fgetc()就是这么做的。</li>
+</ul>
+
+
+<p>因此，使用库函数，可以使编程者免于对数据的缓冲。</p>
+
+<h4>设置一个stdio流的缓冲模式</h4>
+
+<p>调用一个setvbuf()，可以控制stdio库使用缓冲的形式。</p>
+
+<pre><code>#include &lt;stdio.h&gt;
+int setvbuf(FILE *stream,char *buf,int mode,size_t size);
+</code></pre>
+
+<p>参数stream标识将要修改那个文件流的缓冲模式。打开流后，一定要在调用其他任何stdio函数前调用setvbuf()。setvbuf()将影响后续在指定流上进行的所有stdio操作。</p>
+
+<p>参数buf和size则针对参数stream要使用的缓冲区，指定这些参数有如下两种方式</p>
+
+<ul>
+    <li>如果参数buf不为NULL，那么其指向size大小的内存块以作为stream的缓冲区。因为stdio库将要使用buf所指的缓冲区，所以该缓冲区必须是动态或者静态在堆上分配的。</li>
+    <li>若buf为NULL，那么stdio库会为stream自动分配一个缓冲区(除非选择非缓冲的I/O).SUSv3允许，但是不强制要求库实现使用size来确定其缓冲区的大小，glibc实现会根据该场景下忽略size。</li>
+</ul>
+
+
+<p>参数mode制定缓冲的类型，并具有下列值之一：</p>
+
+<ul>
+    <li>_IONBF:不对I/O进行缓冲，每个stdio库函数立即调用read()或者write()，并且忽略buf和size参数，可以制定这两个参数为NULL和0。stderr默认属于这个类型，从而保证错误信息能及时输出。</li>
+    <li>_IOLBF:采用行I/O缓冲。指代终端设备的流默认属于这一类型，对于输出流，在输出一个换行符(除非缓冲区填满)前将缓冲数据。对于输入流，每次读取一行。</li>
+    <li>_IOFBF:采用全缓冲。单次读、写数据(通过read()或者write()系统调用)的大小与缓冲区相同。指代磁盘的流默认此缓冲模式。</li>
+</ul>
+
+
+<pre><code>#include &lt;stdio.h&gt;
+void setbuf(FILE *stream,char *buf)
+</code></pre>
+
+<p>setbuf(fp,buf)调用除了不返回结果外，就相当于：setvbuf(fp,buf,(buf!=NULL) ? <em>IOFBF:</em>IONBF,BUF_SIZE);</p>
+
+<pre><code>#include &lt;stdio.h&gt;
+void setbuffer(FIEL *stream,char *buf,size_t size);
+</code></pre>
+
+<p>setbuffer函数类似于setbuf()函数，但允许调用指定buf缓冲区大小。</p>
+
+<p>对setbuffer(fp,buf,size)调用相当于：setvbuf(fp,buf,(buf!=NULL) ? <em>IOFBF:</em>IONBF,size);</p>
+
+<h4>刷新stdio缓冲区</h4>
+
+<p>无论当前采用何种缓冲模式，在任何时刻都可以使用fflush()库函数强制将stdio输出流中的数据刷新到内核缓冲区。</p>
+
+<pre><code>#include&lt;stdio.h&gt;
+int fflush(FILE *stream)
+    return 0-SUC,-1-ERR
+</code></pre>
+
+<ul>
+    <li>如果参数为NULL，则刷新所有stdio缓冲区。</li>
+    <li>也能将fflush()应用与输入流，这将丢弃业已缓冲的数据。</li>
+    <li>关闭相应流时，将自动刷新其stdio缓冲区。</li>
+</ul>
+
+
+<p>在包括glibc库在内的许多C函数库实现中，若stdin和stdou指向同一个终端，那么无论何时从stdin中读取输入时，都将隐含调用一次fflush(stdout)函数，这将刷新写入stdout的任何提示，但不包括终止换行符。</p>
+
+<h3>控制文件I/O的内核缓冲</h3>
+
+<p>强制刷新内核缓冲区到输出文件是有可能的。有时这个也很有必要，例如，当应用程序（如数据库的日志文件）要确保在继续操作前将输出真正写入磁盘（或者至少写入磁盘的硬件高速缓存中。）</p>
+
+<h4>同步I/O数据完整性和同步I/O文件完整性</h4>
+
+<p>SUSv3将同步I/O完成定义为：某一I/O操作，要么已成功完成到磁盘的数据传递，要么被诊断为不成功。</p>
+
+<p>SUSv3定义了两种不同类型的同步I/O完成，二者之间的区别涉及用于描述文件的元数据，亦即内核针对文件而存储的数据</p>
+
+<p>定义的第一种同步I/O完成类型是synchronized I/O data integrity completion.(同步I/O数据完整性)，旨在确保针对文件的一次更新传递了足够的信息（到磁盘），以便于之后对数据的获取。</p>
+
+<ul>
+    <li>就读操作而言，这意味着被请求的文件数据已经（从磁盘）传递给进程。若存在任何影响到所请求数据的挂起的写操作，那么在执行读操作前，会将这些数据快递到磁盘。</li>  
+    <li>就写操作而言，这意味着写请求所指定的数据已传递（到磁盘）完毕，且用于获取数据的所有文件元数据也已传递（到磁盘）完毕。此处的要点在于要获取文件数据，并非需要传递所有经过修改的文件元数据属性。发生修改的文件元数据中需要传递的属性之一是文件大小（如果写操作确实扩展了文件）。相形之下，如果是文件时间戳发生了变化，就无需在下次获取数据前将其传递到磁盘。</li>
+</ul>
+
+
+<p>Synchronized I/O file integrity completion（同步I/O文件完整性）是另一种同步I/O完成，也是上述synchronized I/O data integrity completion的超集。该I/O完成模式的区别在于在对文件的一次更新过程中，要将所有发生更新的文件元数据传递到磁盘上，即使有些在后续对文件数据的读操作中并不重要。</p>
+
+<h4>用于控制文件I/O内核缓冲的系统调用</h4>
+
+<p>fsync()系统调用将值缓冲数据和打开文件描述符fd相关的所有元数据都刷新到磁盘上。调用fsync()会强制使文件处于Synchronized I/O file integrity completion状态。</p>
+
+<pre><code>#include &lt;unistd.h&gt;
+int fsync(int fd);
+    return 0-suc,-1-ERR
+</code></pre>
+
+<p>仅在对磁盘设备（或者至少其高速缓存）的传递完成后，fsync()调用才会返回。</p>
+
+<p>fdatasync()系统调用的运作类似与fsync()，但是会强制是文件处于synchronized I/O data integrity completion的状态。</p>
+
+<pre><code>#include &lt;unistd.h&gt;
+int fdatasync(int fd);
+    return 0-SUC,-1-ERR
+</code></pre>
+
+<p>fdatasync()可能会减少对磁盘的操作次数，由fsync()调用请求的两次变为一次。例如：若仅仅修改了文件数据，但是没有改变大小，那么调用fdatasync()只是强行更新了数据，而不会更新元数据。相比之下，fsync()会更新元数据。因为文件的数据可元数据通常驻留在磁盘的不同区域，更新这些数据需要反复寻道。</p>
+
+<p>sync()系统调用会使包含更新文件信息的所有内核缓冲区（即数据块，指针块，元数据等）刷新到磁盘上。</p>
+
+<pre><code>#include &lt;unistd.h&gt;
+void sync(void);
+</code></pre>
+
+<p>在linux实现中，sync()调用仅在所有数据已经传递到磁盘上（至少是高速缓存）时返回。</p>
+
+<h4>使所有写入同步：O_SYNC</h4>
+
+<p>调用open()函数时指定O_SYNC标志，则会使所有后续输出同步。</p>
+
+<pre><code>fd=open(pathname,O_WRONLY|O_SYNC);
+</code></pre>
+
+<p>调用open()后，每个write()调用会自动将文件数据和元数据刷新到磁盘上。</p>
+
+<h3>就I/O模式向内核提出意见posix_fadvise()系统调用</h3>
+
+<pre><code>#define _XOPEN_SOURCE 600
+#include &lt;fcntl.h&gt;
+int posiz_fadvise(int fd,off_t offset,off_t len,int advice)
+    return 0-SUC,or a positive error number on err
+</code></pre>
+
+<p>内核可以（但是不必要）根据posix_fadvise()所提供的信息来优化对缓冲区高速缓存的使用，进而提高进程和整个系统的性能。</p>
+
+<p>参数fd所指为一文件描述符，调用期望通知内核进程对fd指代文件的访问模式。参数offset和len确定了建议所适用的文件区域，offset指定区域起始的偏移量，len指定了区域的大小。len为0表示从offset开始，到文件尾。</p>
+
+<p>参数advice表示进程期望对文件采用的访问模式，具体为下列之一：</p>
+
+<ul>
+    <li>POSIX_FADV_NORMAL:进程对访问模式没有特别建议。如果没有建议，这就是默认行为，在linux中，该操作将文件预读窗口大小设置为128kb</li>
+    <li>POSIX_FADV_SEQUENTIAKL:进程预计会从低偏移量到高偏移量顺序读取数据。在linux中，该操作将文件预读窗口设置为默认值的两倍。</li>
+    <li>POSIX_FADV_RANDOM:进程预计随机顺序访问数据。在linux中，该选项会禁止文件预读。</li>
+    <li>POSIX_FADV_WILLNEED:进程预计会在不久的将来访问指定的文件区域。内核将有offset和len指定区域的文件数据预先读取到缓冲区高速缓存中。对于数据保留多久，内核没有保证。</li>
+    <li>POSIX_FADV_DONTNEED:进程预计在不久的将来不会访问指定的文件区域，这一操作给内核的建议是释放相关的高速缓存页面（如果存在的话）</li>
+    <li>POSIX_FADV_NOREUSE:进程预计会一次性访问文件区域，而且不会复用，这等于提示内核对指定区域访问一次后即释放页面（linux中还没有实现）</li>
+</ul>
+
+
+<h3>绕过缓冲区高速缓存:直接I/O</h3>
+
 <!-- 多说评论框 start -->
 	<div class="ds-thread" data-thread-key="Linux/Unix系统编程" data-title="Linux/Unix系统编程" data-url="/Linux-Unix"></div>
 <!-- 多说评论框 end -->

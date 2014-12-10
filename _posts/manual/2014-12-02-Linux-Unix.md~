@@ -955,14 +955,140 @@ write()随即返回，在后续的某个时刻，内核会将其缓冲区中的�
 
 与此同理，读取时内核会从磁盘中读取数据并存到内核缓冲区，read()调用将直接从缓冲区取数据，直至将缓冲区数据取完。这时内核会再从文件中读下一段内容到缓冲区。
 
+Linux内核对高速缓冲区没有设置上限，仅受限于物理内存的大小。
 
+<ul>
+	<li>内核缓冲的设计旨在减少对磁盘I/O的次数，从而提高效率。</li>
+</ul>
 
+###stdio库的缓冲
 
+<ul>
+	<li>库缓冲的设计旨在缓冲大块数据以减少系统调用的次数。</li>
+	<li>C语言的库I/O函数fprintf(),fscanf(),fgets(),fputs(),fputc(),fgetc()就是这么做的。</li>
+</ul>
+因此，使用库函数，可以使编程者免于对数据的缓冲。
 
+####设置一个stdio流的缓冲模式
+调用一个setvbuf()，可以控制stdio库使用缓冲的形式。
 
+	#include <stdio.h>
+	int setvbuf(FILE *stream,char *buf,int mode,size_t size);
 
+参数stream标识将要修改那个文件流的缓冲模式。打开流后，一定要在调用其他任何stdio函数前调用setvbuf()。setvbuf()将影响后续在指定流上进行的所有stdio操作。
 
+参数buf和size则针对参数stream要使用的缓冲区，指定这些参数有如下两种方式
+<ul>
+	<li>如果参数buf不为NULL，那么其指向size大小的内存块以作为stream的缓冲区。因为stdio库将要使用buf所指的缓冲区，所以该缓冲区必须是动态或者静态在堆上分配的。</li>
+	<li>若buf为NULL，那么stdio库会为stream自动分配一个缓冲区(除非选择非缓冲的I/O).SUSv3允许，但是不强制要求库实现使用size来确定其缓冲区的大小，glibc实现会根据该场景下忽略size。</li>
+</ul>
 
+参数mode制定缓冲的类型，并具有下列值之一：
+<ul>
+	<li>_IONBF:不对I/O进行缓冲，每个stdio库函数立即调用read()或者write()，并且忽略buf和size参数，可以制定这两个参数为NULL和0。stderr默认属于这个类型，从而保证错误信息能及时输出。</li>
+	<li>_IOLBF:采用行I/O缓冲。指代终端设备的流默认属于这一类型，对于输出流，在输出一个换行符(除非缓冲区填满)前将缓冲数据。对于输入流，每次读取一行。</li>
+	<li>_IOFBF:采用全缓冲。单次读、写数据(通过read()或者write()系统调用)的大小与缓冲区相同。指代磁盘的流默认此缓冲模式。</li>
+</ul>
+
+	#include <stdio.h>
+	void setbuf(FILE *stream,char *buf)
+
+setbuf(fp,buf)调用除了不返回结果外，就相当于：setvbuf(fp,buf,(buf!=NULL) ? _IOFBF:_IONBF,BUF_SIZE);
+
+	#include <stdio.h>
+	void setbuffer(FIEL *stream,char *buf,size_t size);
+
+setbuffer函数类似于setbuf()函数，但允许调用指定buf缓冲区大小。
+
+对setbuffer(fp,buf,size)调用相当于：setvbuf(fp,buf,(buf!=NULL) ? _IOFBF:_IONBF,size);
+
+####刷新stdio缓冲区
+
+无论当前采用何种缓冲模式，在任何时刻都可以使用fflush()库函数强制将stdio输出流中的数据刷新到内核缓冲区。
+
+	#include<stdio.h>
+	int fflush(FILE *stream)
+		return 0-SUC,-1-ERR
+
+<ul>
+	<li>如果参数为NULL，则刷新所有stdio缓冲区。</li>
+	<li>也能将fflush()应用与输入流，这将丢弃业已缓冲的数据。</li>
+	<li>关闭相应流时，将自动刷新其stdio缓冲区。</li>
+</ul>
+在包括glibc库在内的许多C函数库实现中，若stdin和stdou指向同一个终端，那么无论何时从stdin中读取输入时，都将隐含调用一次fflush(stdout)函数，这将刷新写入stdout的任何提示，但不包括终止换行符。
+
+###控制文件I/O的内核缓冲
+
+强制刷新内核缓冲区到输出文件是有可能的。有时这个也很有必要，例如，当应用程序（如数据库的日志文件）要确保在继续操作前将输出真正写入磁盘（或者至少写入磁盘的硬件高速缓存中。）
+
+####同步I/O数据完整性和同步I/O文件完整性
+
+SUSv3将同步I/O完成定义为：某一I/O操作，要么已成功完成到磁盘的数据传递，要么被诊断为不成功。
+
+SUSv3定义了两种不同类型的同步I/O完成，二者之间的区别涉及用于描述文件的元数据，亦即内核针对文件而存储的数据
+
+定义的第一种同步I/O完成类型是synchronized I/O data integrity completion.(同步I/O数据完整性)，旨在确保针对文件的一次更新传递了足够的信息（到磁盘），以便于之后对数据的获取。
+<ul>
+	<li>就读操作而言，这意味着被请求的文件数据已经（从磁盘）传递给进程。若存在任何影响到所请求数据的挂起的写操作，那么在执行读操作前，会将这些数据快递到磁盘。</li>	
+	<li>就写操作而言，这意味着写请求所指定的数据已传递（到磁盘）完毕，且用于获取数据的所有文件元数据也已传递（到磁盘）完毕。此处的要点在于要获取文件数据，并非需要传递所有经过修改的文件元数据属性。发生修改的文件元数据中需要传递的属性之一是文件大小（如果写操作确实扩展了文件）。相形之下，如果是文件时间戳发生了变化，就无需在下次获取数据前将其传递到磁盘。</li>
+</ul>
+Synchronized I/O file integrity completion（同步I/O文件完整性）是另一种同步I/O完成，也是上述synchronized I/O data integrity completion的超集。该I/O完成模式的区别在于在对文件的一次更新过程中，要将所有发生更新的文件元数据传递到磁盘上，即使有些在后续对文件数据的读操作中并不重要。
+
+####用于控制文件I/O内核缓冲的系统调用
+
+fsync()系统调用将值缓冲数据和打开文件描述符fd相关的所有元数据都刷新到磁盘上。调用fsync()会强制使文件处于Synchronized I/O file integrity completion状态。
+
+	#include <unistd.h>
+	int fsync(int fd);
+		return 0-suc,-1-ERR
+
+仅在对磁盘设备（或者至少其高速缓存）的传递完成后，fsync()调用才会返回。
+
+fdatasync()系统调用的运作类似与fsync()，但是会强制是文件处于synchronized I/O data integrity completion的状态。
+
+	#include <unistd.h>
+	int fdatasync(int fd);
+		return 0-SUC,-1-ERR
+
+fdatasync()可能会减少对磁盘的操作次数，由fsync()调用请求的两次变为一次。例如：若仅仅修改了文件数据，但是没有改变大小，那么调用fdatasync()只是强行更新了数据，而不会更新元数据。相比之下，fsync()会更新元数据。因为文件的数据可元数据通常驻留在磁盘的不同区域，更新这些数据需要反复寻道。
+
+sync()系统调用会使包含更新文件信息的所有内核缓冲区（即数据块，指针块，元数据等）刷新到磁盘上。
+	
+	#include <unistd.h>
+	void sync(void);
+
+在linux实现中，sync()调用仅在所有数据已经传递到磁盘上（至少是高速缓存）时返回。
+
+####使所有写入同步：O_SYNC
+
+调用open()函数时指定O_SYNC标志，则会使所有后续输出同步。
+
+	fd=open(pathname,O_WRONLY|O_SYNC);
+
+调用open()后，每个write()调用会自动将文件数据和元数据刷新到磁盘上。
+
+##就I/O模式向内核提出意见posix_fadvise()系统调用
+
+	#define _XOPEN_SOURCE 600
+	#include <fcntl.h>
+	int posiz_fadvise(int fd,off_t offset,off_t len,int advice)
+		return 0-SUC,or a positive error number on err
+
+内核可以（但是不必要）根据posix_fadvise()所提供的信息来优化对缓冲区高速缓存的使用，进而提高进程和整个系统的性能。
+
+参数fd所指为一文件描述符，调用期望通知内核进程对fd指代文件的访问模式。参数offset和len确定了建议所适用的文件区域，offset指定区域起始的偏移量，len指定了区域的大小。len为0表示从offset开始，到文件尾。
+
+参数advice表示进程期望对文件采用的访问模式，具体为下列之一：
+<ul>
+	<li>POSIX_FADV_NORMAL:进程对访问模式没有特别建议。如果没有建议，这就是默认行为，在linux中，该操作将文件预读窗口大小设置为128kb</li>
+	<li>POSIX_FADV_SEQUENTIAKL:进程预计会从低偏移量到高偏移量顺序读取数据。在linux中，该操作将文件预读窗口设置为默认值的两倍。</li>
+	<li>POSIX_FADV_RANDOM:进程预计随机顺序访问数据。在linux中，该选项会禁止文件预读。</li>
+	<li>POSIX_FADV_WILLNEED:进程预计会在不久的将来访问指定的文件区域。内核将有offset和len指定区域的文件数据预先读取到缓冲区高速缓存中。对于数据保留多久，内核没有保证。</li>
+	<li>POSIX_FADV_DONTNEED:进程预计在不久的将来不会访问指定的文件区域，这一操作给内核的建议是释放相关的高速缓存页面（如果存在的话）</li>
+	<li>POSIX_FADV_NOREUSE:进程预计会一次性访问文件区域，而且不会复用，这等于提示内核对指定区域访问一次后即释放页面（linux中还没有实现）</li>
+</ul>
+
+##绕过缓冲区高速缓存:直接I/O
 
 
 
