@@ -1168,4 +1168,75 @@ mount系统调用用于将由source指定设备包含的文件系统挂载到tar
 
 参数fstype是一串字符串，用来标识设备所含的文件系统，比如ext4或btrfs。
 
-参数mountflags为掩码
+参数mountflags为掩码：
+<ul>
+	<li>MS_BING:建立绑定挂载。</li>
+	<li>MS_DIRSYNC:同步更新路径</li>
+	<li>MS_MANDLOCK:允许强制锁定文件</li>
+	<li>MS_MOVE:以原子操作将挂载点移到新位置</li>
+	<li>MS_NOATIME:不更新文件的最后访问时间</li>
+	<li>MS_NODEV:不允许访问设备</li>
+	<li>MS_NODIRTIME:不更新目录的最后访问时间</li>
+	<li>MS_NOEXEC:不允许程序执行</li>
+	<li>MS_RDONLY:禁用set-user-ID和set-group-ID程序</li>
+	<li>MS_REG:递归挂载</li>
+	<li>MS_RELATIME:只有当最后访问时间早于修改时间或者最后状态变更时间时，才对前者进行更新</li>
+	<li>MS_REMOUNT:使用新的mountflags和data重新挂载</li>
+	<li>MS_STRICTATIME:总是更新最后访问时间</li>
+	<li>MS_SYNCHRONOUS:使得所有文件和目录同步更新</li>
+</ul>
+
+###卸载文件系统：umount()和umount2()
+
+	#include <sys/mount.h>
+	int umount(const char *target);
+		return 0-SUC,-1-ERR
+
+target参数指定待卸载文件系统的挂载点。无法卸载正在使用中(busy)文件系统，意即这一文件系统上有文件被打开，或者进程的当前工作目录驻留在次文件系统下。此时调用会返回EBUSY。
+
+	#include <sys/mount.h>
+	int umount2(const char *target,int flags);
+		return 0-SUC,-1-ERR
+
+系统调用umount2比mount的扩展版，可以对卸载操作进行更精密的操作。flags为0或者有多个值OR而成，flags如下：
+<ul>
+	<li>MNT_DETACH:执行lazy卸载。对挂载点进行标记，一方面允许已使用了挂载点的进程得以继续使用，同时禁止任何其他进程对该挂载点发起新的访问。当所有进程不在访问点时，系统会卸载相应的文件系统。</li>
+	<li>MNT_EXPIRE:将挂载点标记为到期(expired)？？？？？</li>
+	<li>MNT_FORCE:即便文件系统（只对NFS挂载有效）处与在用状态，依然将其强行卸载。采用这一选项可能会造成数据丢失。</li>
+	<li>UMOUNT_NOFOLLOW:若target为符号链接，则不对其进行解引用。该标志专为某些set-user-ID-root程序而设计的，此类程序允许非特权级用户执行卸载操作，意在避免安全问题。</li>
+</ul>
+
+###略去一些高级挂载特性，还有虚拟内存文件系统，tmpfs。
+
+###获得文件系统有关的信息statvfs()
+
+	#include <sys/statvfs.h>
+	int statvfs(const char *pathname,struct statvfs *statvfsbuf);
+	int fstatvfs(int fd,struct statvfs *statvfsbuf);
+		return 0-SUC,-1-ERR
+
+两者的唯一区别是用于标识文件系统的方式，前者需要指定pathname，后者需要打开文件的描述符。两者均会返回一个结构：
+	
+	struct statvfs
+	{
+		unsigned long f_bsize;	//filesystem block size
+		unsigned long f_frsize;	//fundamental filesystem block size
+		
+		fsblkcnt_t f_blocks;	//Total number of blocks in file system
+		fsblkcnt_t f_bfree;	//Total number of free blocks
+		fsblkcnt_t f_bavail;	//number of free blocks available to unprivileged process
+
+		fsfilcnt_t f_files;	//total number of i-nodes
+		fsfilcnt_t f_ffree;	//total number of free i-nodes
+		fsfilcnt_t f_favail;	//number of i-nodes available to unprivileged process
+		
+		unsigned long f_fsid;	//filesystem ID
+		unsigned long f_flag;	//mount flags
+		unsigned long f_namemax;//maximum length of filenames on this filesystem
+	}
+
+
+
+
+
+##文件属性

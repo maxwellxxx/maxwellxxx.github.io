@@ -42,7 +42,7 @@
     <div class="entry">
         <h1 class="entry-title"><a href="/Linux-Unix" title="Linux/Unix系统编程">Linux/Unix系统编程</a></h1>
         <p class="entry-date">2014-12-02</p>
-        <p>更新于：2014-12-07
+        <p>更新于：2014-12-10
 开始各种填坑，不过决定以后要为每本书都开个坑，以前的书也要开个小坑………总之这个博客就是个大月亮！！！
 <img src="/images/manual/moon.jpg" alt="moon" />
 不过这篇真的是个正经的存在，我会乱讲？？！！</p>
@@ -1292,6 +1292,137 @@ FILE*fdopen(int fd,const char *mode);
 <p>fdopen()函数与fileno()功能相反，给定一个文件描述符，函数将创建一个使用该描述符进行文件I/O的相应流。mode参数与fopen()中的mode参数含义相同。r为读，w为写，a为追加。若参数和文件描述符fd的访问模式不一样，则对fdopen的调用将返回失败。</p>
 
 <p>使用stdio函数，并结合系统调用来实现对文件I/O的操作时，必须将缓冲问题牢记于心。I/O系统调用会直接将数据传递到内核缓冲区高速缓存。而stdio库函数会等到用户空间缓冲区填满在调用write()将其传递到内核缓冲。</p>
+
+<h2>系统编程概念</h2>
+
+<p>以下忽略，见详细分析</p>
+
+<ul>
+    <li>设备专用文件</li>
+    <li>磁盘和分区</li>
+    <li>文件系统</li>
+    <li>i节点</li>
+    <li>虚拟文件系统（VFS）</li>
+    <li>日志文件系统</li>
+    <li>单根目录层级和挂载点</li> 
+</ul>
+
+
+<h3>文件系统的挂载和卸载</h3>
+
+<p>系统调用mount()和umount()运行特权级进程（CAP_SYS_ADMIN）以挂载或卸载文件系统。</p>
+
+<p>以下三个文件包含了当前已挂载或者可挂载的文件系统信息：</p>
+
+<ul>
+    <li>/proc/mounts：可查看当前已挂载文件系统的列表。此文件是内核数据结构的接口，所以总是包含已挂载文件系统的精确信息。</li>
+    <li>/etc/mtab：包含的信息和上一个文件类似，只是略微详细一点，特别包含了mount(8)传递给文件系统的专有项，这在上一个文件里没有出现。但是因为系统调用mount()和umount()不更新这个文件，所以这个文件中的内容可能不准确。</li>
+    <li>/etc/fstab：由系统管理员手工维护，包含了对系统支持的所有文件系统的描述，该文件可供mount(8),umount(8)以及fsck(8)使用。</li>
+</ul>
+
+
+<p>以上三个文件格式相同，如下所示：</p>
+
+<pre><code>/dev/sda9 /boot ext3 rw 0 0
+</code></pre>
+
+<ul>
+    <li>1、已挂载的设备名</li>
+    <li>2、设备的挂载点</li>
+    <li>3、文件系统类型</li>
+    <li>4、挂载标志，如上就是已读写挂载</li>
+    <li>5、一个数字，dump(8)会使用其来控制对文件系统备份。只有/etc/fstab文件中才用的到该字段。</li>
+    <li>6、一个数字，在系统引导时，用于控制fsck(8)对文件系统的检查。</li>
+</ul>
+
+
+<h3>挂载文件系统mount()(系统调用)</h3>
+
+<pre><code>#include &lt;sys/mount.h&gt;
+int mount(const char *source,const char *target,const char *fstype,unsigned long mountflags, const void *data);
+    return 0-SUC,-1-ERR
+</code></pre>
+
+<p>mount系统调用用于将由source指定设备包含的文件系统挂载到target指定的目录下。这两个参数命名为source和target的原因是mount除了将文件系统挂载到一目录下，还可以执行其他工作。</p>
+
+<p>参数fstype是一串字符串，用来标识设备所含的文件系统，比如ext4或btrfs。</p>
+
+<p>参数mountflags为掩码：</p>
+
+<ul>
+    <li>MS_BING:建立绑定挂载。</li>
+    <li>MS_DIRSYNC:同步更新路径</li>
+    <li>MS_MANDLOCK:允许强制锁定文件</li>
+    <li>MS_MOVE:以原子操作将挂载点移到新位置</li>
+    <li>MS_NOATIME:不更新文件的最后访问时间</li>
+    <li>MS_NODEV:不允许访问设备</li>
+    <li>MS_NODIRTIME:不更新目录的最后访问时间</li>
+    <li>MS_NOEXEC:不允许程序执行</li>
+    <li>MS_RDONLY:禁用set-user-ID和set-group-ID程序</li>
+    <li>MS_REG:递归挂载</li>
+    <li>MS_RELATIME:只有当最后访问时间早于修改时间或者最后状态变更时间时，才对前者进行更新</li>
+    <li>MS_REMOUNT:使用新的mountflags和data重新挂载</li>
+    <li>MS_STRICTATIME:总是更新最后访问时间</li>
+    <li>MS_SYNCHRONOUS:使得所有文件和目录同步更新</li>
+</ul>
+
+
+<h3>卸载文件系统：umount()和umount2()</h3>
+
+<pre><code>#include &lt;sys/mount.h&gt;
+int umount(const char *target);
+    return 0-SUC,-1-ERR
+</code></pre>
+
+<p>target参数指定待卸载文件系统的挂载点。无法卸载正在使用中(busy)文件系统，意即这一文件系统上有文件被打开，或者进程的当前工作目录驻留在次文件系统下。此时调用会返回EBUSY。</p>
+
+<pre><code>#include &lt;sys/mount.h&gt;
+int umount2(const char *target,int flags);
+    return 0-SUC,-1-ERR
+</code></pre>
+
+<p>系统调用umount2比mount的扩展版，可以对卸载操作进行更精密的操作。flags为0或者有多个值OR而成，flags如下：</p>
+
+<ul>
+    <li>MNT_DETACH:执行lazy卸载。对挂载点进行标记，一方面允许已使用了挂载点的进程得以继续使用，同时禁止任何其他进程对该挂载点发起新的访问。当所有进程不在访问点时，系统会卸载相应的文件系统。</li>
+    <li>MNT_EXPIRE:将挂载点标记为到期(expired)？？？？？</li>
+    <li>MNT_FORCE:即便文件系统（只对NFS挂载有效）处与在用状态，依然将其强行卸载。采用这一选项可能会造成数据丢失。</li>
+    <li>UMOUNT_NOFOLLOW:若target为符号链接，则不对其进行解引用。该标志专为某些set-user-ID-root程序而设计的，此类程序允许非特权级用户执行卸载操作，意在避免安全问题。</li>
+</ul>
+
+
+<h3>略去一些高级挂载特性，还有虚拟内存文件系统，tmpfs。</h3>
+
+<h3>获得文件系统有关的信息statvfs()</h3>
+
+<pre><code>#include &lt;sys/statvfs.h&gt;
+int statvfs(const char *pathname,struct statvfs *statvfsbuf);
+int fstatvfs(int fd,struct statvfs *statvfsbuf);
+    return 0-SUC,-1-ERR
+</code></pre>
+
+<p>两者的唯一区别是用于标识文件系统的方式，前者需要指定pathname，后者需要打开文件的描述符。两者均会返回一个结构：</p>
+
+<pre><code>struct statvfs
+{
+    unsigned long f_bsize;  //filesystem block size
+    unsigned long f_frsize; //fundamental filesystem block size
+
+    fsblkcnt_t f_blocks;    //Total number of blocks in file system
+    fsblkcnt_t f_bfree; //Total number of free blocks
+    fsblkcnt_t f_bavail;    //number of free blocks available to unprivileged process
+
+    fsfilcnt_t f_files; //total number of i-nodes
+    fsfilcnt_t f_ffree; //total number of free i-nodes
+    fsfilcnt_t f_favail;    //number of i-nodes available to unprivileged process
+
+    unsigned long f_fsid;   //filesystem ID
+    unsigned long f_flag;   //mount flags
+    unsigned long f_namemax;//maximum length of filenames on this filesystem
+}
+</code></pre>
+
+<h2>文件属性</h2>
 
 <!-- 多说评论框 start -->
 	<div class="ds-thread" data-thread-key="Linux/Unix系统编程" data-title="Linux/Unix系统编程" data-url="/Linux-Unix"></div>
