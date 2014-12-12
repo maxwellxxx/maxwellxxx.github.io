@@ -4,7 +4,7 @@ title: Linux/Unix系统编程
 description: 计划写满500个系统调用和标准库函数的使用方法和注意事项……看能不能坚持吧，笔记这回事，还是习惯纸笔……
 category: manual
 ---
-更新于：2014-12-07
+更新于：2014-12-10
 开始各种填坑，不过决定以后要为每本书都开个坑，以前的书也要开个小坑………总之这个博客就是个大月亮！！！
 ![moon](/images/manual/moon.jpg)
 不过这篇真的是个正经的存在，我会乱讲？？！！
@@ -1240,3 +1240,47 @@ target参数指定待卸载文件系统的挂载点。无法卸载正在使用�
 
 
 ##文件属性
+
+###获取文件信息stat()(系统调用)
+
+利用系统调用stat()、lstat()以及fstat()，可以获取与文件有关的信息，其中大部分提取自文件的i节点。
+
+	#include <sys/stat.h>
+	int stat(const char *pathname,struct stat *statbuf);
+	int lstat(const char *pathname,struct stat *statbuf);
+	int fstat(int fd,struct stat *statbuf);
+		return 0-SUC,-1-ERR
+
+stat()会返回所命名文件的相关信息。
+
+lstat()与stat()类似，区别在于如果文件属于符号链接，那么所返回的信息针对的是符号链接本身(而非符号链接所指向的文件)，换句话说就是不解引用。
+
+fstat()则会返回某个打开的文件描述符所指代文件的信息。
+
+系统调用stat()和lstat()无需对文件本身拥有任何权限，但是针对pathname的父目录要有执行(搜索)权限。
+
+上述所有的调用都会在缓冲区返回一个由statbuf指向的stat结构
+
+	struct stat
+	{
+		dev_t		st_dev;		//IDs of device on which file resides;
+		ino_t 		st_ino;		//I-node number of file
+		mode_t		st_mode;	//File type and permissions
+		nlink_t		st_nlink;	//Number of (hard) links to file
+		uid_t		st_uid;		//user id of file owner
+		gid_t		st_gid;		//group id of file owner
+		dev_t		st_rdev;	//IDs for device special files
+		off_t		st_size;	//Total file size (bytes)
+		blksize_t	st_blksize;	//Optimal block size for I/O(bytes)
+		blkcnt_t	st_blocks;	//Number of(512B) blocks allocated
+		time_t		st_atime;	//Time of last file access
+		time_t		st_mtime;	//Time of last file modification
+		time_t		st_ctime;	//Time of last status change
+	}
+
+<ul>
+	<li>设备ID和i节点号：st_dev字段标识文件所驻留的设备。st_ino字段则包含了文件的i节点号。利用以上两者，可在所有文件系统中唯一识别某个文件。dev_t类型记录了设备的主、辅ID。如果是针对设备的i节点，那么在st_rdev字段则包含设备的主、辅ID。</li>
+	<li>文件所有权：st_uid和st_gid字段分别标示了文件属主和属组。</li>
+	<li>链接数：st_nlink字段包含了文件的硬链接数。</li>
+	<li>文件类型及权限：st_mode字段内包含有位掩码，标示文件类型和指定文件权限的双重作用。</li>
+</ul>
