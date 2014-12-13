@@ -1283,4 +1283,61 @@ fstat()则会返回某个打开的文件描述符所指代文件的信息。
 	<li>文件所有权：st_uid和st_gid字段分别标示了文件属主和属组。</li>
 	<li>链接数：st_nlink字段包含了文件的硬链接数。</li>
 	<li>文件类型及权限：st_mode字段内包含有位掩码，标示文件类型和指定文件权限的双重作用。</li>
+	<li>对于常规文件，st_size字段表示文件的字节数。对于符号链接，则表示链接所指路径名的长度。对于内存共享对象，则表示对象的大小。</li>
+	<li>st_blocks字段表示分配给文件的总块数，块大小为512B，其中包括了为指针块分配的空间。注意！！这里记录的是实际给文件分配的磁盘块数量，如果是空洞文件这个值肯定小于文件字节数字段。</li>
+	<li>st_blksize:最优块大小，一般为4096.</li>
+	<li>st_atime,st_mtime,st_ctime分别记录了文件上次访问时间，上次修改时间，上次状态改变时间。</li>
 </ul>
+
+判断文件类型：
+	
+	if(S_ISREG(statbuf.st_mode))
+		printf("regular file\n");
+
+针对stat结构中的st_mode来检查文件类型
+<ul>
+	<li>常量：S_IFREG,测试宏：S_ISREG(),文件类型：常规文件</li>
+	<li>常量：S_IFDIR,测试宏：S_ISDIR(),文件类型：目录</li>
+	<li>常量：S_IFCHR,测试宏：S_ISCHR(),文件类型：字符设备</li>
+	<li>常量：S_IFBLK,测试宏：S_ISBLK(),文件类型：块设备</li>
+	<li>常量：S_IFIFO,测试宏：S_ISFIFO(),文件类型：FIFO或管道</li>
+	<li>常量：S_IFSOCK,测试宏：S_ISSOCK(),文件类型：套接字</li>
+	<li>常量：S_IFLNK,测试宏：S_ISLNK(),文件类型：符号链接</li>
+</ul>
+
+###文件时间戳
+
+这里各个函数对三个时间戳的影响！！！表格缺失，稍后补。
+
+###使用utime()和utimes()来改变文件时间戳（系统调用）
+
+	#include <utime.h>
+	int utime(const char *pathname,const struct utimbuf *buf);
+		return 0-SUC,-1-ERR
+
+参数pathname来表示要修改的文件路径，若为符号链接则解引用。buf可以为NULL，也可以为指向utimbuf结构的指针。
+
+	struct utimbuf
+	{
+		time_t actime;
+		time_t modtime;
+	}
+
+函数视两种情况工作：
+<ul>
+	<li>如果buf为NULL，那么会将文件的上次访问和修改时间置为当前时间。需要特权级权限，或则有效ID与文件属主ID相配切有写权限。</li>
+	<li>如果buf指向utimbuf结构，则会使用结构中的时间来更新。也需要权限。</li>
+</ul>
+
+	#include <sys/time.h>
+	int utimes(const char *pathname,const struct timeval tv[2]);
+		reutrn 0-SUC,-1-ERR
+
+与上者差别是可以指定微秒级的时间，新的访问时间在tv[0]指定，修改时间在tv[1]中指定。
+
+	#include <sys/time.h>
+	int futimes(int fd,const struct timeval tv[2]);
+	int lutimes(const char *pathname,const struct timeval tv[2]);
+		return 0-SUC,-1-ERR
+
+两者与utimes函数功能相同，只是futimes以fd作为参数，而lutimes则是如果传入的文件为链接符号，则不解引用。
