@@ -1341,3 +1341,25 @@ fstat()则会返回某个打开的文件描述符所指代文件的信息。
 		return 0-SUC,-1-ERR
 
 两者与utimes函数功能相同，只是futimes以fd作为参数，而lutimes则是如果传入的文件为链接符号，则不解引用。
+
+###文件属性
+
+每个文件都有一个与之关联的用户ID和组ID，藉此可以判定文件的属主和属组。在创建文件时，其用户ID继承自进程的有效用户ID。其组ID继承自进程有效组ID（System V）或者目录的组ID（BSD）。当为项目创建目录时，需要该目录下的所有文件隶属于某一个特定组，并可以为改组所有用户访问。这时候如果采用后一种继承方式比较实用。
+
+新建文件的组ID如何取舍有多种因素决定，包括文件系统等。
+
+如果mount指定了-o grpid选项，那么文件总是继承父目录的组ID。如果指定了-o nogrpid（此为默认选项），则继承进程有效组ID，不过如果设置了父目录的set-group-ID位，则也继承父目录组ID。
+
+###改变文件属主chown(),fchown(),lchown()(系统调用)
+
+	#include <unistd.h>
+	int chown(const char *pathname,uid_t owner,gid_t group);
+	
+	#define _XOPEN_SOURCE 500  //OR DEFINE _BSD_SOURCE
+	int lchown(const char *pathname,uid_t owner,gid_t group);
+	int fchown(int fd,uid_t owner,gid_t group);
+		return 0-SUC,-1-ERR
+
+pathname，fd文件的路径或者fd。owner为要改变为的属主，group属组，若只想改变之一，置-1即可。l和f前缀你懂得。
+
+只有有CAP_CHOWN权限进程才可以使用改变用户ID
