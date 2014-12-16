@@ -1362,4 +1362,105 @@ fstat()则会返回某个打开的文件描述符所指代文件的信息。
 
 pathname，fd文件的路径或者fd。owner为要改变为的属主，group属组，若只想改变之一，置-1即可。l和f前缀你懂得。
 
-只有有CAP_CHOWN权限进程才可以使用改变用户ID
+只有有CAP_CHOWN权限进程才可以使用改变用户ID，非特权级进程可以通过chown()将文件属组改为其所从属的任意组ID。
+
+如果文件组的属主或者属组发生了变化，那么文件的set-user-ID和set-group-ID权限会关闭。理由你自己考虑。
+
+###文件权限
+
+stat结构中的st_mod字段的低12位定义了文件的权限。其中前三位为专用位，分别是set-user-ID,set-group-ID,sticky位。其余9位构成了定义权限的掩码，分别授予各个用户。分为三类：
+<ul>
+	<li>Owner:授予文件属主的权限</li>
+	<li>Group:授予文件属组的权限</li>
+	<li>Other:授予其它用户的权限</li>
+</ul>
+而没一类权限如下：
+<ul>
+	<li>Read</li>
+	<li>Write</li>
+	<li>Execute</li>
+</ul>
+
+当执行命令ls -l时
+
+	$ ls -l test.sh
+	-rwxr-x---
+
+在以上文件权限输出为“-rwxr-x---”(字符串起始的"-"表明文件为普通文件)，在解读时应该分为三组（用户，属主，其它），每组中每个字母代表可读，可写，可执行（如果设置为set-user-ID位或者set-group-ID位，对应可执行为变为s）
+
+####目录权限
+
+目录和文件拥有相同的权限方案，只是对于3种权限意义不同：
+<ul>
+	<li>读权限：可列出（比如使用ls命令）目录下面的内容（文件名）</li>
+	<li>写权限：可以在目录中创建和删除文件。这里注意：删除文件对于文件本身的权限没有要求。</li>
+	<li>执行权限：可以访问目录中的文件。因此，有时也可以将目录的可执行权限叫做：search权限。</li>
+</ul>
+拥有对目录的读权限，用户只能查看目录中的文件列表，要访问文件内容，还需要对目录有执行权限。如果只拥有执行权限，可以访问文件的内容，但是不能列出文件列表。（这对于控制对公共目录内容的访问时，是常见的技术）
+
+###权限检查算法
+
+检查文件权限时，内核遵循规则如下：
+<ul>
+	<li>对于特权级进程，授予其所有访问权限。</li>
+	<li>若进程的有效用户ID和文件的用户ID相同，内核授予进程文件属主相同的权限。</li>
+	<li>若进程的有效组ID或者任一附属组ID与文件的组ID相同，内核根据文件属组权限授予。</li>
+	<li>都不满足，使用other权限</li>
+</ul>
+
+####检查对文件的访问权限access()(系统调用)
+
+	#include <unistd.h>
+	int access(const char *pathname,int mode);
+		return 0-All permissions are granted,-1-other
+
+其中参数mode有下列掩码组成。如果进程对文件有mode指定的所有权限，函数返回0，只要有一项不满足就返回-1；
+<ul>
+	<li>F_OK:有这个文件吗</li>
+	<li>R_OK:有读取权限吗</li>
+	<li>W_OK:有写权限吗</li>
+	<li>X_OK:有执行权限么</li>
+</ul>
+
+###进程的文件模式创建掩码umask()(系统调用)
+
+当新建文件时，内核会使用open()或者create()中mode参数来指定新建文件的权限。对于新建目录，则会依据mkdir()中的mode参数。然而文件创建模式掩码会对这些权限进行修改。umask是一种进程属性，当进程创建文件或者目录时，该属性用于指明应该屏蔽那些权限位。进程的umask通常继承自父shell。
+
+	#include <sys/stat.h>
+	mode_t umask(mode_t mask);
+		return per umask
+
+该系统调用用来改变进程的umask改为指定的mask，并返回前一umask。
+
+###更改文件权限chmod(),fchmod()(系统调用)
+
+	#include <sys/stat.h>
+	int chmod(const char *pathname,mode_t mode);
+
+	#define _XOPEN_SOURCE 500   //OR #define _BSD_SOURCE
+	#include <sys/stat.h>
+	int fchmod(int fd,mode_t mode);
+		return 0-SUC,-1-ERR
+
+两函数区别你懂的，mode为新的权限。对文件改变权限需要有(CAP_FOWNER)，或者进程的有效ID与文件的属主ID匹配。
+
+###I节点标志
+
+
+
+
+
+##扩展属性（EA）
+
+扩展属性（EA）即将“名称-值”这种形式的元数据与文件i节点关联起来的技术。
+
+EA可用于实现访问列表和文件能力。但是就设计而论，其能力绝不限于此。例如还可以用EA去记录文件的版本号，与文件的MIME类型/字符集有关的信息，或者指向图符的指针。
+
+####EA的命名空间
+
+EA的命名格式为namespace.name。其中namespace把EA从功能上划分为截然不同的几大类，二name则用来在命名空间中唯一标识某个EA。
+
+namespace有如下四个值：
+<ul>
+	<li>user:</li>
+</ul>
