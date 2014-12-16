@@ -1462,5 +1462,84 @@ EA的命名格式为namespace.name。其中namespace把EA从功能上划分为�
 
 namespace有如下四个值：
 <ul>
-	<li>user:</li>
+	<li>user:将在文件权限检查的制约下由非特权级进程操控。欲获取user EA值，需要有文件的读权限；欲改变，需要有文件写权限，如欲将user EA与一个文件关联，在装配文件系统时要带有user_xattr选项。</li>
+	<li>trusted：也由用户进程“驱使”，这点与user EA相似，不过要操纵trusted EA需要有CAP_SYS_ADMIN特权</li>
+	<li>system：供内核使用，将系统对象与一文件关联。目前仅支持访问控制列表。</li>
 </ul>
+
+在shell中可以使用setfattr(1)和getfattr(1)来设置和查看文件的EA。
+
+	$touch tfile
+	$setfattr -n user.x -v "The past is not dead." tfile
+	$setfattr -n user.y -v "In fact,it's not even past" tfile
+	$getfattr -n user.x tfile
+	# file:tfile
+	user.x="The past is not dead."
+
+	$getfattr -d tfile
+	#file:tfile
+	user.x="The past is not dead."
+	user.y="In fact,it's not even past"
+
+	
+	$setfattr -n user.x tfile
+	$getfattr -d tfile
+	#file:tfile
+	user.x 
+	user.y="In fact,it's not even past"
+
+	$setfattr -x user.y tfile
+	$getfattr -d tfile
+	#file:tfile
+	user.x 
+
+这边有几个系统调用，稍后补上。
+
+
+
+
+
+##访问控制列表（ACL）
+
+利用ACL，可以在任意数量的用户和组之中，为单个用户或者组只指定文件权限。
+
+一个ACL由一系列ACL记录（以下称为ACE）组成，其中每条记录针对单个用户或者用户组定义了对文件的访问权限。
+
+每条ACE都有3部分组成：
+<ul>
+	<li>标记类型：表示该记录作用于一个用户、组，还是其他类别的用户。</li>
+	<li>标记限定符：（可选项）标识特定的用户或组（亦即某个用户ID或者组ID）</li>
+	<li>权限集合：本字段包含所授予的权限信息（读写执行）</li>
+</ul>
+
+标记类型取值可为下列之一：
+<ul>
+	<li>ACL_USER_OBJ:带有该标记的ACE记录文件属主的权限。</li>
+	<li>ACL_USER:带有该标记的ACE记录了授予某用户的权限。</li>
+	<li>ACL_GROUP_OBJ:带有该标记的ACE记录文件组的权限。</li>
+	<li>ACL_GROUP:带有该标记的ACE记录了授予某个组的权限。</li>
+	<li>ACL_MASK:带有该标记的ACE记录了可由ACL_USER,ACL_GROUP_OBJ,ACL_GROUP型ACE所能授予的最高权限。一个ACL只能包含最多一条MASK型ACE，如果ACL包含ACL_USER,或者ACL_GROUP的记录，那么就必须包含一条MASK记录。</li>
+	<li>ACL_OTHER:带有该标记的ACE记录了授予其他用户的权限。该类型ACE只能有一条。</li>
+</ul>
+
+####最小ACL和扩展ACL
+最小ACL语义上等同传统的文件权限集合，恰好有三条组成，分别为ACL_USER_OBJ，ACL_GROUP_OBJ，ACL_OTHER。扩展ACL则是除此之外还包含标记类型为ACL_USER，ACL_GROUP，ACL_MASK的记录。Linux是以系统扩展属性来实现ACL的，用户维护文件ACL的系统扩展属性为system.posix_acl_access。仅当文件具有扩展ACL时，才需要使用这一扩展属性。可将针对最小化ACL的权限信息储存在传统文件权限位中。
+
+###ACL权限检查算法
+
+跟传统文件权限模型相比，对于具有ACL的文件进行权限检查时没有什么不同，按照下列顺序执行，直至满足某一标准：
+<ul>
+	<li>若进程具有权限，则拥有所有访问权限。</li>
+	<li>若某一进程的有效用户ID匹配文件的属主ID，则授予该进程标记类型为ACL_USER_OBJ的ACE指定的权限。</li>
+	<li>若进程的有效用户ID和某一个ACL_USER类型的记录标记限定符匹配，则授予进程改记录与ACL_MASK相与的权限。</li>
+	<li>若进程的组ID（有效组ID和辅助组ID）之一与文件组（ACL_GROUP_OBJ,ACL_GROUP）匹配，则则授予进程改记录与ACL_MASK相与（如果定义了MASK）的权限。</li>
+	<li>授予ACL_OTHER所记录的权限。</li>
+</ul>
+
+啊啊啊，这个好烦啊，以后补上！！！
+
+
+
+
+
+##目录与链接
