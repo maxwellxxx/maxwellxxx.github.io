@@ -28,7 +28,7 @@ category: project
 
 	sudo swapoff -a
 
-用fdisk命令加swap分区的盘符，（例：# fdisk /dev/sda7）剔除swap分区，输入d删除swap分区，然后再n添加分区（添加时硬盘必须要有可用空间，然后再用t将新添的分区id改为82（linux swap类型），最后用w将操作实际写入硬盘（没用w之前的操作是无效的）。(数据诚宝贵,操作需谨慎!)
+用fdisk命令加swap分区的盘符，（fdisk /dev/sda7）剔除swap分区，干掉分区，然后n添加分区（添加时硬盘必须要有可用空间，然后再用t将新添的分区id改为82（linux swap类型），w更新分区表（w之前的操作是无效的）。(数据诚宝贵,操作需谨慎!)
 
 	sudo mkswap /dev/sda2    //格式化sda2分区为swap分区
 	sudo swapon /dev/sda2    //激活!妥妥的啦
@@ -36,4 +36,7 @@ category: project
 永久添加,在/etc/fstab中添加
 
 	/dev/sda2 swap swap defaults 0 0
+
+##吐槽
+GFW墙的一手好网.清华tuna镜像棒棒的.清华是个好学校.android编译简直要屌丝的命!!(END)
 
