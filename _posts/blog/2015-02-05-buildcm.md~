@@ -102,7 +102,7 @@ CM的文档还是比较详实的，不过由于最近cm12.0的发布，文档方
 	  <project name="CyanogenMod/android_device_htc_msm8960-common" path="device/htc/msm8960-common" remote="github" />
 	</manifest>
 
----------------------------roomservice.xml作用---------------------------
+---------------------------roomservice.xml作用------------------------------------------------------
 Repo仓库保存在.repo目录中，而它所管理的Git仓库由.repo/manifest.xml文件描述。文件.repo/manifest.xml实际上只是一个符号链接，它链接至.repo/manifests/default.xml文件。目录.repo/manifests实际上也是一个Git仓库，用来描述当前的CM源码目录都是由哪些工程构成的，并且这些工程是来自于哪些Git远程仓库的。
 
        如果按照标准的Repo仓库管理方法，从CM源码服务器上下载回来设备相关源码之后，应该往.repo/manifests/default.xml文件增加相应的描述，以后repo工具可以对这些设备相关的源码进行管理。但是，由于Repo仓库是由官方维护的，当我们在本地往.repo/manifests/default.xml增加了新的内容之后，下次执行repo sync命令时，.repo/manifests/default.xml的内容又会被恢复至修改前的样子，因此，修改.repo/manifests/default.xml文件是不适合的。CM采用另外一个办法，那就是在.repo目录下另外创建一个local_manifests目录，在里面可以随意增加任意命名的xml文件，只要这些xml文件的规范与.repo/manifests/default.xml文件的规范一致即可。执行repo sync命令时，它就会同时从.repo/manifests/default.xml和.repo/local_manifests目录下的xml文件中读取当前都有哪些源码工程需要更新。
