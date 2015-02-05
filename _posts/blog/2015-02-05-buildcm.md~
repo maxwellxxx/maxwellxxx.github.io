@@ -20,70 +20,102 @@ AOSP不包含设备相关硬件驱动（这里指HAL），除了hardware中一�
 
 咳咳～～干儿子就是没有亲儿子待遇好啊，既然这样，只能再找个爹了～
 
-##CM源代码下载
+##CM源代码下载以及编译
 
 CM的文档还是比较详实的，不过由于最近cm12.0的发布，文档方面还没有很好跟进，导致本来很简单的事弄了好久，感觉问题在寻找机型依赖的脚本上～～具体参照[CM DOC][]
-写个教程记录下：
-首先
 
-##关于CM一些总结
-Q：CM下针?（此处可以研究CM下m7的二进制文件处理和编译config，cm下M7的HAL driver到底是怎么样的存在形式，HAL driver是如何安装到系统并且配置的。）
-A：CM对于这
+###下载教程
+1、首先googlesource的文档安装所需要的软件。
 
-如果需要刷写内核，还需要对内核单独编译，需要下载相应设备的内核源代码（大厂家都是开源的。）（其中包括设备的linux层驱动实现）
+2、创建repo以及工作目录
 
+	$ mkdir -p ~/bin
+	$ mkdir -p ~/cm/system
 
-结论：如果将AOSP编译刷写到非原生支持设备，需要的东西有 kernel和makeconfig（可取得），HAL driver（较难取得，m7是没找到，cm是如何获取到的？），系统makeconfig（难取得……这里的makeconfig到底包含什么？它的设备相关性体现在哪里，HAL是如何设置的？除了HAL系统其他层面真的和设备无关了？如果有关还有什么？：这里需要对比几个设备的makecofig文件）
+3、安装repo并纳入PATH
 
+	$ curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+	$ chmod a+x ~/bin/repo
+	$ PATH=~/bin:$PATH
 
+4、初始化cm代码源
 
-android kernel 对linux kernel修改地方在哪里？
+	$ cd ~/cm/system/
+	$ repo init -u https://github.com/CyanogenMod/android.git -b cm-12.0 （这里是下载的cm12分支）
 
+5、修改googlesource源到清华大学源
 
+这里感谢[@TUNA协会][]为开源社区做出的贡献，顺便再次鄙视下GFW。在.repo文件夹下（可能是个隐藏文件）将manifest.xml中aosp的remote改成如下：
 
+	原先的
+	<remote  name="aosp"
+	fetch="https://android.googlesource.com"
+	review="android-review.googlesource.com" />
+	改为
+	<remote  name="aosp"
+	fetch="git://aosp.tuna.tsinghua.edu.cn/android/"
+	review="https://android-review.googlesource.com/" />
 
-CM代码有一部分会从google上下载，如果要从清华下方法如下
-./repo中manifest.xml的
-  <remote  name="aosp"
-           fetch="https://android.googlesource.com"
-           review="android-review.googlesource.com" />
-改成  
-<remote  name="aosp"
-           fetch="git://aosp.tuna.tsinghua.edu.cn/android/"
-           review="android-review.googlesource.com" />
+6、下载
 
+	$ cd ~/cm/system
+	$ repo sync
 
+###编译准备
 
-cm源码不能breakfast原因。
-{
-会出现类似的情况：
-including vendor/cm/vendorsetup.sh
-build/core/product_config.mk:239: *** _nic.PRODUCTS.[[device/htc/m7/cm.mk]]: "device/htc/msm8960-common/msm8960.mk" does not exist。 停止。
-Device m7 not found. Attempting to retrieve device repository from CyanogenMod Github (http://github.com/CyanogenMod).
-Found repository: android_device_htc_m7
-Default revision: cm-12.0
-Checking branch info
-CyanogenMod/android_device_htc_m7 already exists
-Syncing repository to retrieve project.
-Fetching project CyanogenMod/android_device_htc_m7
-Fetching projects: 100% (1/1), done.  
+在工作目录下
+	
+	$ source build/envsetup.sh
+	$ breakfast m7
 
-Repository synced!
-Looking for dependencies
-Done
-build/core/product_config.mk:239: *** _nic.PRODUCTS.[[device/htc/m7/cm.mk]]: "device/htc/msm8960-common/msm8960.mk" does not exist。 停止。
+这时候脚本会检测m7机型的相关依赖代码，但是由于一些bug，好像检测不全，导致有些代码没有下载，其中就包括了内核代码……
 
-** Don't have a product spec for: 'cm_m7'
-** Do you have the right repo manifest?
+具体出现的错误会是类似这样的：
+
+	including vendor/cm/vendorsetup.sh
+	build/core/product_config.mk:239: *** _nic.PRODUCTS.[[device/htc/m7/cm.mk]]: "device/htc/msm8960-common/msm8960.mk" does not exist。 停止。
+	Device m7 not found. Attempting to retrieve device repository from CyanogenMod Github (http://github.com/CyanogenMod).
+	Found repository: android_device_htc_m7
+	Default revision: cm-12.0
+	Checking branch info
+	CyanogenMod/android_device_htc_m7 already exists
+	Syncing repository to retrieve project.
+	Fetching project CyanogenMod/android_device_htc_m7
+	Fetching projects: 100% (1/1), done.  
+
+	Repository synced!
+	Looking for dependencies
+	Done
+	build/core/product_config.mk:239: *** _nic.PRODUCTS.[[device/htc/m7/cm.mk]]: "device/htc/msm8960-common/msm8960.mk" does not exist。 停止。
+
+	** Don't have a product spec for: 'cm_m7'
+	** Do you have the right repo manifest?
 
 分析：这里主要是没有下载到m7相关的一些代码，上例为没有找到msm8960的代码，还可能出现m7-common未找到之类。
-解决方法，在/.repo/local_manifests中roomservice.xml文件（在下面老罗中有介绍文件作用）中加入这些信息：
-  <project name="CyanogenMod/android_device_htc_msm8960-common" path="device/htc/msm8960-common" remote="github" />
-然后通过 repo sync可以同步成功，继续breakfast m7
-}
 
-分析下载的device/htc/下各种文件的作用....官方文档说breakfast会下载内核，但是实际没有下载。
-这里需要参考文档http://wiki.cyanogenmod.org/w/Doc:_integrated_kernel_building 文档指出需要在 device/vendor-name/device-name/cm.dependencies（没有则创建）添加内核依赖，格式如下：
+解决方法是在.repo/local_manifests中roomservice.xml文件中加入这些信息：
+
+	<?xml version="1.0" encoding="UTF-8"?>
+	<manifest>
+	  <project name="CyanogenMod/android_device_htc_m7" path="device/htc/m7" remote="github" />
+	  <project name="CyanogenMod/android_device_htc_m7-common" path="device/htc/m7-common" remote="github" />
+	  <project name="CyanogenMod/android_device_htc_msm8960-common" path="device/htc/msm8960-common" remote="github" />
+	</manifest>
+
+---------------------------roomservice.xml作用---------------------------
+Repo仓库保存在.repo目录中，而它所管理的Git仓库由.repo/manifest.xml文件描述。文件.repo/manifest.xml实际上只是一个符号链接，它链接至.repo/manifests/default.xml文件。目录.repo/manifests实际上也是一个Git仓库，用来描述当前的CM源码目录都是由哪些工程构成的，并且这些工程是来自于哪些Git远程仓库的。
+
+       如果按照标准的Repo仓库管理方法，从CM源码服务器上下载回来设备相关源码之后，应该往.repo/manifests/default.xml文件增加相应的描述，以后repo工具可以对这些设备相关的源码进行管理。但是，由于Repo仓库是由官方维护的，当我们在本地往.repo/manifests/default.xml增加了新的内容之后，下次执行repo sync命令时，.repo/manifests/default.xml的内容又会被恢复至修改前的样子，因此，修改.repo/manifests/default.xml文件是不适合的。CM采用另外一个办法，那就是在.repo目录下另外创建一个local_manifests目录，在里面可以随意增加任意命名的xml文件，只要这些xml文件的规范与.repo/manifests/default.xml文件的规范一致即可。执行repo sync命令时，它就会同时从.repo/manifests/default.xml和.repo/local_manifests目录下的xml文件中读取当前都有哪些源码工程需要更新。
+
+       实际上，在.repo/local_manifests目录下的xml文件，除了可以描述新增的工程之外，还可以描述要删除的工程。例如，如果我们不想将某一个系统功能或者系统APP编译到我们自己制作的ROM去，那么就可以在.repo/local_manifests目录下增加一个xml文件，里面描述我们需要删除对应的工程。这样，当我们从服务器下载回来相应的工程之后，它们就会在本地中被删除。这样就做到了很好的定制化编译，而且又不会与官方的源码结构产生冲突。关于CM的Local Manifests机制，可以参考官方文档：http://wiki.cyanogenmod.org/w/Doc:_Using_manifests。
+------摘自老罗（罗升阳）bolg[从CM刷机过程和原理分析Android系统结构][]
+
+添加完成后再次执行
+
+	$repo sync
+
+可以breakfast m7成功，但是要注意到这里根本没有下载kernel代码，官方文档的确是指出会自动下载，但实际并没有，官方的解决方法是：
+这里参考文档[how to build cm kernel][]文档指出需要在 device/vendor-name/device-name/cm.dependencies（没有则创建）添加内核依赖，格式如下：
 [
  {
    "repository": "name-of-repository-in-the-CyanogenMod-github",
@@ -91,18 +123,48 @@ build/core/product_config.mk:239: *** _nic.PRODUCTS.[[device/htc/m7/cm.mk]]: "de
    "branch": "name-of-branch"
  }
 ]
-尝试在device/htc/m7/cm.dependencies 中添加，breakfast，出错。（感觉这里是cm脚本的bug，虽然会检查依赖，但是不会去下载，就像上面出现m7-common一样）按照上面的方法，还需要在roomservice.xml中添加。
-  <project name="CyanogenMod/android_kernel_htc_m7" path="kernel/htc/m7" remote="github" />
-  <project name="CyanogenMod/android_kernel_htc_msm8960" path="kernel/htc/msm8960" remote="github" />
-cm的github中有两个cm的内核版本，我不知道是哪个，而且我也不能确认应该放到本地哪个文件夹下(后根据mka bootimage 单独编译内核通过出错信息：
-build/core/tasks/kernel.mk:100: * Using prebuilt kernel binary instead of source              *
-build/core/tasks/kernel.mk:101: * THIS IS DEPRECATED, AND WILL BE DISCONTINUED                *
-build/core/tasks/kernel.mk:102: * Please configure your device to download the kernel         *
-build/core/tasks/kernel.mk:103: * source repository to kernel/htc/msm8960
-build/core/tasks/kernel.mk:104: * See http://wiki.cyanogenmod.org/w/Doc:_integrated_kernel_building
-build/core/tasks/kernel.mk:105: * for more information   
+尝试在device/htc/m7/cm.dependencies 中添加，breakfast，出错。（感觉这里是cm脚本的bug，虽然会检查依赖，但是不会去下载，就像上面出现m7-common一样）
 
-确定，应该是下msm8960的kernel，并且放在kernel/htc/msm8960下。
+解决方法：
+删除上面的添加，在roomservice.xml中添加。
 
+	<project name="CyanogenMod/android_kernel_htc_m7" path="kernel/htc/m7" remote="github" />（没用）
+	<project name="CyanogenMod/android_kernel_htc_msm8960" path="kernel/htc/msm8960" remote="github" />
+
+这里就会从github上下载m7的内核代码。第一条其实没有用，不过不知道为什么CM会有两个版本的M7的内核。
+
+###dump二进制文件等
+
+将以及刷入cm的手机连接电脑，在cm/system/device/htc/m7下执行
+
+	$ ./extract-files.sh
+
+脚本会dump二进制文件以及一些配置文件。
+
+###结
+
+至此，可以顺利的编译cm代码并生产zip包。
+
+	$ brunch m7
+
+##一些总结
+
+Q：CM下针对机型的编译?（此处可以研究CM下m7的二进制文件处理和编译config，cm下M7的HAL driver到底是怎么样的存在形式，HAL driver是如何安装到系统并且配置的。）
+A：CM是同过从现有运行的手机上dump的，这里需要自行研究extract-files.sh以及系统打包的脚本。
+
+cm中内核和系统是一同编译的，如果只需要编译内核可以这样操作
+
+	$ source build/envsetup.sh
+	$ breakfast m7
+	$ mka bootimage
+
+##问题
+
+1、如果将AOSP编译刷写到非原生支持设备，需要的东西有 kernel和kernel的makeconfig（可取得），HAL driver（较难取得，m7是没找到，cm是如何获取到的？），系统makeconfig（难取得……这里的makeconfig到底包含什么？它的设备相关性体现在哪里，HAL是如何设置的？除了HAL系统其他层面真的和设备无关了？如果有关还有什么？：这里需要对比几个设备的makecofig文件以及系统打包文件。）
+
+2、android kernel 对linux kernel修改地方在哪里？
 
 [CM DOC]:   http://wiki.cyanogenmod.org/w/Build_for_m7 "How to build cm for m7"
+[@TUNA协会]: http://www.weibo.com/5402274706 "TUNA"
+[从CM刷机过程和原理分析Android系统结构]: http://blog.csdn.net/luoshengyang/article/details/29688041 "blog"
+[how to build cm kernel]: http://wiki.cyanogenmod.org/w/Doc:_integrated_kernel_building "how to build kernel"
