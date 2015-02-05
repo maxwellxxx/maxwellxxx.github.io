@@ -1,0 +1,108 @@
+---
+layout: post
+title: 编译完整CM至HTC ONE（m7 gsm）
+description: 这篇绝对正经
+category: blog
+---
+
+##我AOSP之旅的终结
+上个月下了ASOP5.0.2还有HTC官方提供的GPE（google play edition）版本的M7内核。悲惨的发现HTC好像没有提供驱动二进制文件……
+
+
+AOSP下device文件夹包含了ASOP原生支持设备的编译好的内核二进制文件（vendor/devicename-kernel）。如/android/device/moto/shamu-kernel，包含了shamu的内核二进制文件，而/android/device/moto/shamu根据推测应该是包含了相关机器的驱动二进制文件以及配置。
+
+非官方支持机型内核源代码不包括在AOSP中，需要单独下载。。。
+
+
+AOSP不包含设备相关硬件驱动（这里指HAL），除了hardware中一些厂家开源的HAL。比如要编译NEXUS 5，需要去google官网下载NEXUS 5的驱动二进制文件，安装到代码树顶端（生成vendor/文件夹）即包括了设备的驱动和其他厂家定制。
+
+那么如果要对特定设备进行完整编译和刷写系统（不包括内核），需要有硬件驱动以及相应的makeconfig策略…………
+
+咳咳～～干儿子就是没有亲儿子待遇好啊，既然这样，只能再找个爹了～
+
+##CM源代码下载
+
+CM的文档还是比较详实的，不过由于最近cm12.0的发布，文档方面还没有很好跟进，导致本来很简单的事弄了好久，感觉问题在寻找机型依赖的脚本上～～具体参照[CM DOC][]
+写个教程记录下：
+首先
+
+##关于CM一些总结
+Q：CM下针?（此处可以研究CM下m7的二进制文件处理和编译config，cm下M7的HAL driver到底是怎么样的存在形式，HAL driver是如何安装到系统并且配置的。）
+A：CM对于这
+
+如果需要刷写内核，还需要对内核单独编译，需要下载相应设备的内核源代码（大厂家都是开源的。）（其中包括设备的linux层驱动实现）
+
+
+结论：如果将AOSP编译刷写到非原生支持设备，需要的东西有 kernel和makeconfig（可取得），HAL driver（较难取得，m7是没找到，cm是如何获取到的？），系统makeconfig（难取得……这里的makeconfig到底包含什么？它的设备相关性体现在哪里，HAL是如何设置的？除了HAL系统其他层面真的和设备无关了？如果有关还有什么？：这里需要对比几个设备的makecofig文件）
+
+
+
+android kernel 对linux kernel修改地方在哪里？
+
+
+
+
+CM代码有一部分会从google上下载，如果要从清华下方法如下
+./repo中manifest.xml的
+  <remote  name="aosp"
+           fetch="https://android.googlesource.com"
+           review="android-review.googlesource.com" />
+改成  
+<remote  name="aosp"
+           fetch="git://aosp.tuna.tsinghua.edu.cn/android/"
+           review="android-review.googlesource.com" />
+
+
+
+cm源码不能breakfast原因。
+{
+会出现类似的情况：
+including vendor/cm/vendorsetup.sh
+build/core/product_config.mk:239: *** _nic.PRODUCTS.[[device/htc/m7/cm.mk]]: "device/htc/msm8960-common/msm8960.mk" does not exist。 停止。
+Device m7 not found. Attempting to retrieve device repository from CyanogenMod Github (http://github.com/CyanogenMod).
+Found repository: android_device_htc_m7
+Default revision: cm-12.0
+Checking branch info
+CyanogenMod/android_device_htc_m7 already exists
+Syncing repository to retrieve project.
+Fetching project CyanogenMod/android_device_htc_m7
+Fetching projects: 100% (1/1), done.  
+
+Repository synced!
+Looking for dependencies
+Done
+build/core/product_config.mk:239: *** _nic.PRODUCTS.[[device/htc/m7/cm.mk]]: "device/htc/msm8960-common/msm8960.mk" does not exist。 停止。
+
+** Don't have a product spec for: 'cm_m7'
+** Do you have the right repo manifest?
+
+分析：这里主要是没有下载到m7相关的一些代码，上例为没有找到msm8960的代码，还可能出现m7-common未找到之类。
+解决方法，在/.repo/local_manifests中roomservice.xml文件（在下面老罗中有介绍文件作用）中加入这些信息：
+  <project name="CyanogenMod/android_device_htc_msm8960-common" path="device/htc/msm8960-common" remote="github" />
+然后通过 repo sync可以同步成功，继续breakfast m7
+}
+
+分析下载的device/htc/下各种文件的作用....官方文档说breakfast会下载内核，但是实际没有下载。
+这里需要参考文档http://wiki.cyanogenmod.org/w/Doc:_integrated_kernel_building 文档指出需要在 device/vendor-name/device-name/cm.dependencies（没有则创建）添加内核依赖，格式如下：
+[
+ {
+   "repository": "name-of-repository-in-the-CyanogenMod-github",
+   "target_path": "kernel/vendor-name/device-name",
+   "branch": "name-of-branch"
+ }
+]
+尝试在device/htc/m7/cm.dependencies 中添加，breakfast，出错。（感觉这里是cm脚本的bug，虽然会检查依赖，但是不会去下载，就像上面出现m7-common一样）按照上面的方法，还需要在roomservice.xml中添加。
+  <project name="CyanogenMod/android_kernel_htc_m7" path="kernel/htc/m7" remote="github" />
+  <project name="CyanogenMod/android_kernel_htc_msm8960" path="kernel/htc/msm8960" remote="github" />
+cm的github中有两个cm的内核版本，我不知道是哪个，而且我也不能确认应该放到本地哪个文件夹下(后根据mka bootimage 单独编译内核通过出错信息：
+build/core/tasks/kernel.mk:100: * Using prebuilt kernel binary instead of source              *
+build/core/tasks/kernel.mk:101: * THIS IS DEPRECATED, AND WILL BE DISCONTINUED                *
+build/core/tasks/kernel.mk:102: * Please configure your device to download the kernel         *
+build/core/tasks/kernel.mk:103: * source repository to kernel/htc/msm8960
+build/core/tasks/kernel.mk:104: * See http://wiki.cyanogenmod.org/w/Doc:_integrated_kernel_building
+build/core/tasks/kernel.mk:105: * for more information   
+
+确定，应该是下msm8960的kernel，并且放在kernel/htc/msm8960下。
+
+
+[CM DOC]:   http://wiki.cyanogenmod.org/w/Build_for_m7 "How to build cm for m7"
