@@ -116,13 +116,15 @@ Repo仓库保存在.repo目录中，而它所管理的Git仓库由.repo/manifest
 
 可以breakfast m7成功，但是要注意到这里根本没有下载kernel代码，官方文档的确是指出会自动下载，但实际并没有，官方的解决方法是：
 这里参考文档[how to build cm kernel][]文档指出需要在 device/vendor-name/device-name/cm.dependencies（没有则创建）添加内核依赖，格式如下：
-[
- {
-   "repository": "name-of-repository-in-the-CyanogenMod-github",
-   "target_path": "kernel/vendor-name/device-name",
-   "branch": "name-of-branch"
- }
-]
+
+	[
+	 {
+	   "repository": "name-of-repository-in-the-CyanogenMod-github",
+	   "target_path": "kernel/vendor-name/device-name",
+	   "branch": "name-of-branch"
+	 }
+	]
+
 尝试在device/htc/m7/cm.dependencies 中添加，breakfast，出错。（感觉这里是cm脚本的bug，虽然会检查依赖，但是不会去下载，就像上面出现m7-common一样）
 
 解决方法：
@@ -135,7 +137,7 @@ Repo仓库保存在.repo目录中，而它所管理的Git仓库由.repo/manifest
 
 ###dump二进制文件等
 
-将以及刷入cm的手机连接电脑，在cm/system/device/htc/m7下执行
+将已经刷入cm的手机连接电脑，在cm/system/device/htc/m7下执行
 
 	$ ./extract-files.sh
 
