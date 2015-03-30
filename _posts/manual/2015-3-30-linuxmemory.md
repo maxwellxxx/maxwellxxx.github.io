@@ -388,4 +388,4 @@ type 参数和CPU 标识符（通过smp_processor_id()）指定必须用哪个�
 
 
 最后我们用网上的一个图来总结今天的博文：
-![tinyos](/images/highmem/highmem.gif)
+![memory](/images/highmem/highmem.gif)
