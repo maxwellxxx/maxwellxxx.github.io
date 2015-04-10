@@ -112,7 +112,7 @@ category: manual
 
 
 
-###第二次进入保护模式
+###第二次进入保护模式(第二次设置gdtr)
 
 解压完内核后就应该跳入真正的内核,即内核中第二个startup_32().这个时候的整个vmlinux的编译链接地址都是从虚拟地址(线性地址)0xc0000000开始的,有必要重新设置下段寻址,这个是linux内核第二次设置段寻址,称为第二次进入保护模式.这一次设置的原因是在之前的处理过程中，指令地址是从物理地址0x100000开始的，而此时整个vmlinux的编译链接地址是从虚拟地址0xC0000000开始的，所以需要在这里重新设置boot_gdt的位置。
 
@@ -185,4 +185,65 @@ GDTR是一个长度为48bit的寄存器，内容为一个32位的基地址和一
 
 这里很奇怪,第0个页表的第0项为什么是0x003,而不是0x0呢?因为内存是以4k对齐了,所以地址表项中存的地址低12位是不表示地址的,这里用作各种标志位.不仅是页表中有这种情况,全局目录中每项页不是存的_brk_base的物理地址,比如第0项存的是_brk_base+0x67,0x67也作为标志位.
 
+PTE_IDENT_ATTR常量,可见定义arch/x86/include/asm/pgtable_types.h:
+	#define PTE_IDENT_ATTR  0x003		/* PRESENT+RW */
+	#define PDE_IDENT_ATTR  0x067		/PRESENT+RW+USER+DIRTY+ACCESSED */
+	#define PGD_IDENT_ATTR 0x001		/* PRESENT (no other attributes) */
+	PRESENT=1 页没被交换出内存.PRESENT=0 页被交换出内存,访问内存会产生缺页中断
+
 还有就是刚刚留下的问题,就是为什么要在全局页表的第767项同时分配,原因是这样的:第一次启动分页时目的时将整个内核的物理地址空间映射到虚拟地址空间.而内核在编译链接vmlinux时是从线性地址0xc0000000开始的,解压时是先将vmlinux拷贝到0x1000000以后的内存空间的,然后将它解压到拷贝前的内核镜像地址(0x100000以后).那么通过逻辑地址寻址时0xc0000000线性地址以后的地址需要通过分页映射到物理地址0x00000000开始的空间.0xc00000000>>20=0xc00 0xc00/4=768.所以在分配页表时需要从全局目录表第0和第767项同时开始.
+
+这些工作都完成后,就完成了将物理地址0x00000000到内核_end内存空间映射到线性地址0x00000000开始和0xc0000000开始的内存空间. 这样的话,用逻辑地址0x00000000或者0xc0000000类似的地址都能访问到物理地址0x00000000开始的空间.
+
+
+
+
+###第三次开启保护模式(第三次设置gdtr)
+
+因为开启了分页所以需要设置一次gdtr.Linux x86 的分段管理是通过 GDTR 来实现的,那么现在就来总结一下 Linux 启动以来到现在,共设置了几次 GDTR:
+<ul>
+<li>1. 第一次还是 cpu 处于实模式的时候,运行 arch\x86\boot\pm.c 下 setup_gdt()函数的代码。该函数,设置了两个 GDT 项,一个是代码段可读/执行的,另一个是数据段可读写的,都是从 0-4G 直接映射到 0-4G,也就是虚拟地址和线性地址相等。</li>
+<li>2. 第二次是在内核解压缩以后,用解压缩后的内核代码 arch\x86\kernel\head_32.S 再次对gdt 进行设置,这一次的设置效果和上一次是一样的。</li>
+<li>3. 第三次同样是在 arch\x86\kernel\head_32.S 中,只不过是在开启了页面寻址之后,通过分页寻址得到编译好的全局描述符表 gdt 的地址。这一次效果就跟前两次不一样了,为内核最终使用的全局描述符表,同时也设置了 IDT。</li>
+</ul>
+
+
+
+##文明世界---setup_arch()
+
+
+
+###第二次设置分页
+
+在start_arch()中会再次设置一次cr3:
+
+	 873     /*
+	 874      * copy kernel address range established so far and switch
+	 875      * to the proper swapper page table
+	 876      */
+	 877     clone_pgd_range(swapper_pg_dir     + KERNEL_PGD_BOUNDARY,              
+	 878             initial_page_table + KERNEL_PGD_BOUNDARY,
+	 879             KERNEL_PGD_PTRS);
+	 880     
+	 881     load_cr3(swapper_pg_dir);
+
+在上面,我们初始化了initial_page_table作为全局页目录表.这里把它复制给swapper_pg_dir,在这以后,swapper_pg_dir就一直当做全局目录表使用了....随后设置cr3,弃用以前的initial_page_table.
+
+	定义在:arch/x86/kernel/head_32.S 
+	659 initial_pg_pmd:
+	660     .fill 1024*KPMDS,4,0
+	661 #else  
+	662 ENTRY(initial_page_table)
+	663     .fill 1024,4,0
+	664 #endif 
+	665 initial_pg_fixmap:
+	666     .fill 1024,4,0
+	667 ENTRY(empty_zero_page)
+	668     .fill 4096,1,0
+	669 ENTRY(swapper_pg_dir)
+	670     .fill 1024,4,0
+
+
+###真正的内存管理
+
+到现在为止,linux内核以上面状态进行了一些列工作(此处略过好多....)....终于来到第一个真正的内核管理函数:setup_memory_map().所做的工作是利用INI 0x15中断探测内存
