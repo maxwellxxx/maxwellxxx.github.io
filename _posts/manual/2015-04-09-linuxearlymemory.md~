@@ -207,7 +207,7 @@ PTE_IDENT_ATTR常量,可见定义arch/x86/include/asm/pgtable_types.h:
 <li>3. 第三次同样是在 arch\x86\kernel\head_32.S 中,只不过是在开启了页面寻址之后,通过分页寻址得到编译好的全局描述符表 gdt 的地址。这一次效果就跟前两次不一样了,为内核最终使用的全局描述符表,同时也设置了 IDT。</li>
 </ul>
 
-
+Linux 启动以来自此加载的 gdt 已有以上若干个段的描述符在编译 vmlinux 的时候初始化了,其他没被初始化的地方暂时保留。
 
 ##文明世界---setup_arch()
 
@@ -246,4 +246,96 @@ PTE_IDENT_ATTR常量,可见定义arch/x86/include/asm/pgtable_types.h:
 
 ###真正的内存管理
 
-到现在为止,linux内核以上面状态进行了一些列工作(此处略过好多....)....终于来到第一个真正的内核管理函数:setup_memory_map()
+到现在为止,linux内核以上面状态进行了一些列工作(此处略过好多....)....终于来到第一个真正的内核管理函数:setup_memory_map().
+
+
+我们在执行实模式下代码 main 函数的时候调用了一个 detect_memory_e820()函数,当时该函数通过 BIOS 服务程序 int 0x15 获得系统启动后的所有可用空间,共有boot_params.e820_entries个可用空间,每块空间作为 boot_params.e820_map[]数组的元素,存放着他们的起始地址、大小和元素。
+
+
+这里说个题外话,探测一个 PC 机内存的最好方法是就是通过调用 INT 0x15,eax = 0xe820来实现。这个功能在 2002 年以后被所有 PC 机所使用,这是唯一能够探测超过 4G 大小内存的方案,当然,这个方法也可以被认为是内存的最终检测方法。实际上,这个函数返回一个非排序列表,这个列表包含了那些没有使用的内存信息的项,并且可能返回存在覆盖的区域。在 linux 中每个列表项被存放在 ES:EDI 指定的内存区域中。每个项均有一定的格式:即 2个8字节字 段,一个2字节字段。我们前面看见了,对于内存探测的实现由函数detect_memory_e820 来实现的,在这个函数中,使用了一个do...while()循环来实现,并将所探测的内容写入boot_params.e820_map 数组中。
+
+
+setup_memory_map()会根据boot_params 中 e820_map 字段的值来设置全局变量 e820 的值。这个全局变量是一个e820map 结构:
+
+	struct e820map {
+	__u32 nr_map;
+	struct e820entry map[E820_X_MAX];//E820MAX定义为128
+	};
+
+	struct e820entry {
+	    __u64 addr;    /* start of memory segment */
+	    __u64 size;    /* size of memory segment */
+	    __u32 type;    /* type of memory segment */
+	} __attribute__((packed));
+
+这里略过其他过程,比如内存消毒等等....最后将boot_params.e820_map[]数组中的所有内存区物理内存区物理信息拷贝到全局变量e820中.并将e820中的数据拷贝到e820_saved中当做备份.
+
+
+###max_pfn
+回到setup_arch(),内核根据e820中的数据得到max_pfn:
+
+	1058     max_pfn = e820_end_of_ram_pfn();
+
+函数根据e820的数据来获得32位可用物理内存地址的最大值并右移PAGE_SHIFT,也就是12位最后由函数 e820_end_pfn 返回这个 20 位的值,保存在内部变量 max_pfn 中,作为总的页面数量.
+
+
+###高端内存
+
+start_arch()中接着,find_low_pfn_range();它根据max_pfn是否大于MAXMEM_PFN来判断是否启用了高端内存.
+
+	644 void __init find_low_pfn_range(void) 
+	645 {       
+	646     /* it could update max_pfn */
+	647      
+	648     if (max_pfn <= MAXMEM_PFN)
+	649         lowmem_pfn_init();
+	650     else
+	651         highmem_pfn_init();		//现在系统一般进入到这里了
+	652 }  
+
+这个MAXMEM_PFN跟max_pfn一样,也是除去低12位的20位的一个数值。如果启用了高端内存,就调用highmem_pfn_init()函数将全局变量max_low_pfn设置为MAXMEM_PFN;并设置全局变量 highmem_pages 为 max_pfn - MAXMEM_PFN,作为高端页面的数量:
+
+	607 static void __init highmem_pfn_init(void)
+	608 {
+	609     max_low_pfn = MAXMEM_PFN;
+	610  
+	611     if (highmem_pages == -1)
+	612         highmem_pages = max_pfn - MAXMEM_PFN;
+	613  
+	614     if (highmem_pages + MAXMEM_PFN < max_pfn)
+	615         max_pfn = MAXMEM_PFN + highmem_pages;
+	616  
+	617     if (highmem_pages + MAXMEM_PFN > max_pfn) {
+	618         printk(KERN_WARNING MSG_HIGHMEM_TOO_SMALL,
+	619             pages_to_mb(max_pfn - MAXMEM_PFN),
+	620             pages_to_mb(highmem_pages));
+	621         highmem_pages = 0;
+	622     }   
+	623 #ifndef CONFIG_HIGHMEM
+	624     /* Maximum memory usable is what is directly addressable */
+	625     printk(KERN_WARNING "Warning only %ldMB will be used.\n", MAXMEM>>20);
+	626     if (max_pfn > MAX_NONPAE_PFN)
+	627         printk(KERN_WARNING "Use a HIGHMEM64G enabled kernel.\n");
+	628     else
+	629         printk(KERN_WARNING "Use a HIGHMEM enabled kernel.\n");
+	630     max_pfn = MAXMEM_PFN;
+	....
+	639 }  
+
+###小结
+
+内核运行到这里,我们来做下总结,看下现在的状态.
+<ul>
+<li>1. 已经设置了最终gdt,开启了段式内存管理,内核代码和数据段都是0x00000000.这样的结果就是逻辑地址经过硬件平台段式管理转换后得到的线性地址和逻辑地址相同.</li>
+<li>2. 已经设置了cr3,开启了分页式内存管理.最后的全局目录表是swapper_pg_dir,页表还是在__brk_base开始.将物理地址0x00000000-_end的空间映射到虚拟地址(线性地址)0x00000000开始和0xc0000000开始(即全局目录同时从0项和767项分配).这样导致的结果是由虚拟地址0xc0000000开始链接的内核可以正常通过逻辑地址寻址.</li>
+<li>3. 内核通过int 0x15获取物理内存布局,并存在e820全局数组中.</li>
+</ul>
+
+###着手建立最终内核页表
+
+首先我们来看几个全局变量的值(假设开启高端内存).
+<ul>
+<li>max_pfn=32位可用物理内存地址的最大值并右移PAGE_SHIFT(20位):所有可用物理内存总页框数.</li>
+<li>max_low_pfn=MAXMEM_PFN:低端内存总页框数</li>
+<li>highmem_pages = max_pfn - MAXMEM_PFN:高端内存总页框数</li>
+</ul>
