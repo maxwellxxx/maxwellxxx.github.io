@@ -176,6 +176,9 @@ GDTR是一个长度为48bit的寄存器，内容为一个32位的基地址和一
 	movl $CR0_STATE,%eax
 	movl %eax,%cr0		/* ..and set paging (PG) bit */
 
+!!!!!注意这里第一次分配内存!!!!!
+
+
 那这张全局目录又是如何初始化,各个页表、表项又是怎么初始化的呢?在链接vmlinux时,有一个叫做BRK段,其开始地址为__brk_base.这个段的作用是保留给用户通过brk()系统调用向内核申请内存空间用的.这里我们先不管它.现在内核需要分配页表空间,应该从哪里开始呢?就从__brk_base分配.那么就需要把__brk_base的物理地址给initial_page_table的第0项还有第767项,分配时同时从第0和第767开始分配,至于为什么是767项,下面会解释.
 
 那么从__brk_base开始的第一个页面就变成第一个页表,第二个页面就变成第二个页表....有多少个页表取决于内核_end的地址.总之要将整个内核都完成从物理地址到虚拟地址的映射.完成后,全局目录和页表的情况是这样的:
@@ -350,4 +353,124 @@ start_arch()中接着,find_low_pfn_range();它根据max_pfn是否大于MAXMEM_PF
 (maxwellxxx!!!!这个可能是老版内核的分配方式,需要考证是否现在还建立这个bit map)
 
 先不管这个bit map和初期内存分配和释放平台,首先是建立最终内核页表,建立时分为三种情况:
+<ul>
+<li>第一种:RAM小于896MB时,也就是没有高端内存的情况.</li>
+这种情况是把所有的RAM全部映射到0xc0000000,由内核页表所提供的最终映射必须把从0xc0000000开始的线性地址转化为从0开始的物理地址,主内核页全局目录仍然保存在swapper_pg_dir变量中。
 
+<li>第二种:RAM在896Mb到4GB之间,也就是存在高端内存的情况.</li>
+这种情况就不能把所有的RAM全部映射到内核空间了,Linux在初始化阶段只是把一个具有896MB的RAM映射到内核线性地址空间。如果一个程序需要对现有RAM的其余部分寻址，那就必须把某些其他的线性地址间隔映射到所需的RAM，做法就是修改某些页表项的值。内核使用与前一种情况相同的代码来初始化页全局目录。
+
+<li>第三种:RAM在4GB以上.</li>
+现代计算机，特别是些高性能的服务器内存远远超过4GB，那么内核页表初始化怎么做呢；更确切地说，我们处理以下发生的情况：
+• CPU模式支持物理地址扩展（PAE）
+• RAM容量大于4GB
+• 内核以PAE支持来编译
+
+尽管PAE处理36位物理地址，但是线性地址依然是32位地址。如前所述，Linux映射一个896MB的RAM到内核地址空间；剩余RAM留着不映射，并由动态重映射来处理。与前一种情况的主要差异是使用三级分页模型。其实，即使我们的CPU支持PAE，但是也只能有寻址能力为64GB的内核页表，所以，如果要建立更高性能的服务器，建议改善动态重映射算法，或者干脆升级为64位的处理器。
+<ul>
+
+
+我们这里仅讨论第二种情况.注意,是要映射到线性地址0xc0000000开始的地址,
+
+既然要建立映射,按照从前建立临时页表的套路,应该要有个全局目录表,然后分配若干页表并初始化完成映射.这里全局目录表已经有了,不过现在的分页机制还得靠它,暂时还有用,先不管它.那么就剩下分配页表空间了...
+
+
+关于分配页表空间,这里说下,曾经的内核是简单粗暴,直接从e820中找一块连续内存供所有页表空间使用.而我分析的这个内核版本(3.19.x)已经不这么玩了,它是这么搞的:
+
+!!!!!注意这里第二次分配内存!!!!!
+
+start_arch中的1088 early_alloc_pgt_buf();它是为前期的页表分配空间.具体分配了两种页表,看注释是分配了12k给初始化时用页表,12k给了ISA空间映射用页表.也就是分配12k的页表空间作为前期内存分页用,其余的再动态分配,而不像以前那样分配全部页表空间.
+
+	117 /* need 3 4k for initial PMD_SIZE,  3 4k for 0-ISA_END_ADDRESS */
+	118 #define INIT_PGT_BUF_SIZE   (6 * PAGE_SIZE)
+	120 void  __init early_alloc_pgt_buf(void) 
+	121 {
+	122     unsigned long tables = INIT_PGT_BUF_SIZE;	6*4096
+	123     phys_addr_t base;
+	124      
+	125     base = __pa(extend_brk(tables, PAGE_SIZE));	//扩展brk,但是不能超过brk_limit
+	126      
+	127     pgt_buf_start = base >> PAGE_SHIFT;		//pgt开始的页框数
+	128     pgt_buf_end = pgt_buf_start;			//已分配pgt结束位置的页框数
+	129     pgt_buf_top = pgt_buf_start + (tables >> PAGE_SHIFT);//分配的pgt空间结尾页框数
+	130 }  
+
+可以看到是从brk中分配内存作为页表空间,就和之前建立页表时一样,这边其实进行第二次分页,需要重做之前的工作.注意扩展时没有覆盖以前的页表!
+
+	262 void * __init extend_brk(size_t size, size_t align)
+	263 {        
+	264     size_t mask = align - 1;
+	265     void *ret;
+	266          
+	267     BUG_ON(_brk_start == 0);
+	268     BUG_ON(align & mask);
+	269          
+	270     _brk_end = (_brk_end + mask) & ~mask;	//没有覆盖曾经的页表空间
+	271     BUG_ON((char *)(_brk_end + size) > __brk_limit);
+	272          
+	273     ret = (void *)_brk_end;
+	274     _brk_end += size;			//分配size(6*4096)
+	275          
+	276     memset(ret, 0, size);
+	277          
+	278     return ret;
+	279 } 
+
+
+分配完初始阶段的部分页表空间后就要开始真正的建立页表了!
+
+	555 void __init init_mem_mapping(void)
+	556 {
+	557     unsigned long end;
+	558    
+	559     probe_page_size_mask();
+	560    
+	561 #ifdef CONFIG_X86_64
+	562     end = max_pfn << PAGE_SHIFT;		//64位处理器
+	563 #else					//获取最大内存地址
+	564     end = max_low_pfn << PAGE_SHIFT;	//END=896mb!!!!!!!!!
+	565 #endif
+	566    
+	567     /* the ISA range is always mapped regardless of memory holes */
+	568     init_memory_mapping(0, ISA_END_ADDRESS);//0x100000
+	569    
+	570     /*
+	571      * If the allocation is in bottom-up direction, we setup direct mapping
+	572      * in bottom-up, otherwise we setup direct mapping in top-down.
+	573      */
+	574     if (memblock_bottom_up()) {
+	575         unsigned long kernel_end = __pa_symbol(_end);
+	576    
+	577         /*
+	578          * we need two separate calls here. This is because we want to
+	579          * allocate page tables above the kernel. So we first map
+	580          * [kernel_end, end) to make memory above the kernel be mapped
+	581          * as soon as possible. And then use page tables allocated above
+	582          * the kernel to map [ISA_END_ADDRESS, kernel_end).
+	583          */
+	584         memory_map_bottom_up(kernel_end, end);
+	585         memory_map_bottom_up(ISA_END_ADDRESS, kernel_end);
+	586     } else {
+	587         memory_map_top_down(ISA_END_ADDRESS, end);
+	588     }
+	589    
+	590 #ifdef CONFIG_X86_64
+	591     if (max_pfn > max_low_pfn) {
+	592         /* can we preseve max_low_pfn ?*/
+	593         max_low_pfn = max_pfn;
+	594     }
+	595 #else
+	596     early_ioremap_page_table_range_init();		
+	597 #endif
+	598    
+	599     load_cr3(swapper_pg_dir);
+	600     __flush_tlb_all();
+	601    
+	602     early_memtest(0, max_pfn_mapped << PAGE_SHIFT);
+	603 }  
+
+根据那篇转的高端内存映射的博文,我们可以知道,这边只要负责映射低端内存空也就是0-896mb.而这部分内存根据前面那个函数可以看到,也分为两个部分开始映射:
+<ul>
+<li>首先映射0-ISA_END_ADDRESS(0x100000)的RAM</li>
+<li>接着映射0x100000~896mb的RAM</li>
+</ul>
