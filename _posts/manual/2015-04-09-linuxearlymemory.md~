@@ -370,7 +370,7 @@ start_arch()中接着,find_low_pfn_range();它根据max_pfn是否大于MAXMEM_PF
 <ul>
 
 
-我们这里仅讨论第二种情况.注意,是要映射到线性地址0xc0000000开始的地址,
+我们这里仅讨论第二种情况.注意,是要映射到线性地址0xc0000000开始的地址,也就意味着只要从全局目录项767开始就行了.
 
 既然要建立映射,按照从前建立临时页表的套路,应该要有个全局目录表,然后分配若干页表并初始化完成映射.这里全局目录表已经有了,不过现在的分页机制还得靠它,暂时还有用,先不管它.那么就剩下分配页表空间了...
 
@@ -474,3 +474,579 @@ start_arch中的1088 early_alloc_pgt_buf();它是为前期的页表分配空间.
 <li>首先映射0-ISA_END_ADDRESS(0x100000)的RAM</li>
 <li>接着映射0x100000~896mb的RAM</li>
 </ul>
+
+
+首先看映射0-ISA_END_ADDRESS(0x100000)的情况,init_memory_mapping(0, ISA_END_ADDRESS);//0x100000
+
+	370 /*  
+	371  * Setup the direct mapping of the physical memory at PAGE_OFFSET.
+	372  * This runs before bootmem is initialized and gets pages directly from
+	373  * the physical memory. To access them they are temporarily mapped.
+	374  */   
+	375 unsigned long __init_refok init_memory_mapping(unsigned long start,
+	376                            unsigned long end)
+	377 {   
+	378     struct map_range mr[NR_RANGE_MR];
+	379     unsigned long ret = 0;
+	380     int nr_range, i;
+	381  
+	382     pr_info("init_memory_mapping: [mem %#010lx-%#010lx]\n",
+	383            start, end - 1);
+	384     
+	385     memset(mr, 0, sizeof(mr));
+	386     nr_range = split_mem_range(mr, 0, start, end);
+	387     
+	388     for (i = 0; i < nr_range; i++)
+	389         ret = kernel_physical_mapping_init(mr[i].start, mr[i].end,
+	390                            mr[i].page_size_mask);
+	391  
+	392     add_pfn_range_mapped(start >> PAGE_SHIFT, ret >> PAGE_SHIFT);
+	393  
+	394     return ret >> PAGE_SHIFT; 
+	395 } 
+
+map_range结构如下,split_mem_range()主要是按照4K和2M对齐的两种方式来重新确定内存开始和结束的地址.即在for循环中,会循环两次,分别按照4K和2M来映射内存.而本文中,我们只讨论4K对齐的情况.
+
+	150 struct map_range { 
+	151     unsigned long start;	//内存开始地址
+	152     unsigned long end;	//内存结束地址
+	153     unsigned page_size_mask;//对齐mask
+	154 }; 
+
+重新确定内存范围后,来到kernel_physical_mapping_init(),这个才是真正的建立页表,设置页表项,进行内存映射,注意,这里没有定义PAE.
+
+	250 unsigned long __init
+	251 kernel_physical_mapping_init(unsigned long start,
+	252                  unsigned long end,
+	253                  unsigned long page_size_mask)
+	254 {   
+	255     int use_pse = page_size_mask == (1<<PG_LEVEL_2M);
+	256     unsigned long last_map_addr = end;
+	257     unsigned long start_pfn, end_pfn;
+	258     pgd_t *pgd_base = swapper_pg_dir;
+	259     int pgd_idx, pmd_idx, pte_ofs;
+	260     unsigned long pfn;
+	261     pgd_t *pgd;
+	262     pmd_t *pmd;
+	263     pte_t *pte; 
+	264     unsigned pages_2m, pages_4k;
+	265     int mapping_iter;
+	266     
+	267     start_pfn = start >> PAGE_SHIFT;
+	268     end_pfn = end >> PAGE_SHIFT;
+	269     
+	270     /*
+	271      * First iteration will setup identity mapping using large/small pages
+	272      * based on use_pse, with other attributes same as set by
+	273      * the early code in head_32.S
+	274      *
+	275      * Second iteration will setup the appropriate attributes (NX, GLOBAL..)
+	276      * as desired for the kernel identity mapping.
+	277      *
+	278      * This two pass mechanism conforms to the TLB app note which says:
+	279      *
+	280      *     "Software should not write to a paging-structure entry in a way
+	281      *      that would change, for any linear address, both the page size
+	282      *      and either the page frame or attributes."
+	283      */
+	284     mapping_iter = 1;
+	285    
+	286     if (!cpu_has_pse)
+	287         use_pse = 0;
+	288    
+	289 repeat:
+	290     pages_2m = pages_4k = 0;
+	291     pfn = start_pfn;
+	292     pgd_idx = pgd_index((pfn<<PAGE_SHIFT) + PAGE_OFFSET);
+	293     pgd = pgd_base + pgd_idx;
+	294     for (; pgd_idx < PTRS_PER_PGD; pgd++, pgd_idx++) {
+	295         pmd = one_md_table_init(pgd);
+	296    
+	297         if (pfn >= end_pfn)
+	298             continue;
+	299 #ifdef CONFIG_X86_PAE
+	300         pmd_idx = pmd_index((pfn<<PAGE_SHIFT) + PAGE_OFFSET);
+	301         pmd += pmd_idx;
+	302 #else
+	303         pmd_idx = 0;
+	304 #endif
+	305         for (; pmd_idx < PTRS_PER_PMD && pfn < end_pfn;
+	306              pmd++, pmd_idx++) {
+	307             unsigned int addr = pfn * PAGE_SIZE + PAGE_OFFSET;
+	308    
+	309             /*
+	310              * Map with big pages if possible, otherwise
+	311              * create normal page tables:
+	312              */
+	328                 if (is_kernel_text(addr) ||
+	329                     is_kernel_text(addr2))
+	330                     prot = PAGE_KERNEL_LARGE_EXEC;
+	331    
+	332                 pages_2m++;
+	333                 if (mapping_iter == 1)
+	334                     set_pmd(pmd, pfn_pmd(pfn, init_prot));
+	335                 else
+	336                     set_pmd(pmd, pfn_pmd(pfn, prot));
+	337    
+	338                 pfn += PTRS_PER_PTE;
+	339                 continue;
+	340             }
+	341             pte = one_page_table_init(pmd);
+	342    
+	343             pte_ofs = pte_index((pfn<<PAGE_SHIFT) + PAGE_OFFSET);
+	344             pte += pte_ofs;
+	345             for (; pte_ofs < PTRS_PER_PTE && pfn < end_pfn;
+	346                  pte++, pfn++, pte_ofs++, addr += PAGE_SIZE) {
+	347                 pgprot_t prot = PAGE_KERNEL;
+	348                 /*
+	349                  * first pass will use the same initial
+	350                  * identity mapping attribute.
+	351                  */
+	352                 pgprot_t init_prot = __pgprot(PTE_IDENT_ATTR);
+	353    
+	354                 if (is_kernel_text(addr))
+	355                     prot = PAGE_KERNEL_EXEC;
+	356    
+	357                 pages_4k++;
+	358                 if (mapping_iter == 1) {
+	359                     set_pte(pte, pfn_pte(pfn, init_prot));
+	360                     last_map_addr = (pfn << PAGE_SHIFT) + PAGE_SIZE;
+	361                 } else
+	362                     set_pte(pte, pfn_pte(pfn, prot));
+	363             }
+	364         }
+	365     }
+	366     if (mapping_iter == 1) {
+	367         /*
+	368          * update direct mapping page count only in the first
+	369          * iteration.
+	370          */
+	371         update_page_count(PG_LEVEL_2M, pages_2m);
+	372         update_page_count(PG_LEVEL_4K, pages_4k);
+	373    
+	374         /*
+	375          * local global flush tlb, which will flush the previous
+	376          * mappings present in both small and large page TLB's.
+	377          */
+	378         __flush_tlb_all();
+	379    
+	380         /*
+	381          * Second iteration will set the actual desired PTE attributes.
+	382          */
+	383         mapping_iter = 2;
+	384         goto repeat;
+	385     }
+	386     return last_map_addr;
+	387 }    
+	313             if (use_pse) {
+	314                 unsigned int addr2;
+	315                 pgprot_t prot = PAGE_KERNEL_LARGE;
+	316                 /*
+	317                  * first pass will use the same initial
+	318                  * identity mapping attribute + _PAGE_PSE.
+	319                  */
+	320                 pgprot_t init_prot =
+	321                     __pgprot(PTE_IDENT_ATTR |
+	322                          _PAGE_PSE);
+	323    
+	324                 pfn &= PMD_MASK >> PAGE_SHIFT;
+	325                 addr2 = (pfn + PTRS_PER_PTE-1) * PAGE_SIZE +
+	326                     PAGE_OFFSET + PAGE_SIZE-1;
+	327    
+	328                 if (is_kernel_text(addr) ||
+	329                     is_kernel_text(addr2))
+	330                     prot = PAGE_KERNEL_LARGE_EXEC;
+	331    
+	332                 pages_2m++;
+	333                 if (mapping_iter == 1)
+	334                     set_pmd(pmd, pfn_pmd(pfn, init_prot));
+	335                 else
+	336                     set_pmd(pmd, pfn_pmd(pfn, prot));
+	337    
+	338                 pfn += PTRS_PER_PTE;
+	339                 continue;
+	340             }
+	341             pte = one_page_table_init(pmd);
+	342    
+	343             pte_ofs = pte_index((pfn<<PAGE_SHIFT) + PAGE_OFFSET);
+	344             pte += pte_ofs;
+	345             for (; pte_ofs < PTRS_PER_PTE && pfn < end_pfn;
+	346                  pte++, pfn++, pte_ofs++, addr += PAGE_SIZE) {
+	347                 pgprot_t prot = PAGE_KERNEL;
+	348                 /*
+	349                  * first pass will use the same initial
+	350                  * identity mapping attribute.
+	351                  */
+	352                 pgprot_t init_prot = __pgprot(PTE_IDENT_ATTR);
+	353    
+	354                 if (is_kernel_text(addr))
+	355                     prot = PAGE_KERNEL_EXEC;
+	356    
+	357                 pages_4k++;
+	358                 if (mapping_iter == 1) {
+	359                     set_pte(pte, pfn_pte(pfn, init_prot));
+	360                     last_map_addr = (pfn << PAGE_SHIFT) + PAGE_SIZE;
+	361                 } else
+	362                     set_pte(pte, pfn_pte(pfn, prot));
+	363             }
+	364         }
+	365     }
+	366     if (mapping_iter == 1) {
+	367         /*
+	368          * update direct mapping page count only in the first
+	369          * iteration.
+	370          */
+	371         update_page_count(PG_LEVEL_2M, pages_2m);
+	372         update_page_count(PG_LEVEL_4K, pages_4k);
+	373    
+	374         /*
+	375          * local global flush tlb, which will flush the previous
+	376          * mappings present in both small and large page TLB's.
+	377          */
+	378         __flush_tlb_all();
+	379    
+	380         /*
+	381          * Second iteration will set the actual desired PTE attributes.
+	382          */
+	383         mapping_iter = 2;
+	384         goto repeat;
+	385     }
+	386     return last_map_addr;
+	387 } 
+
+根据注释,这个函数的作用是将物理内存地址都映射到从内核空间开始(虚拟地址)的地址,即从0xc0000000开始.
+函数一开始定义了4个变量:
+
+	260     unsigned long pfn;-------->页框号,初始是0.
+	261     pgd_t *pgd;--------------->指向一个目录项开始的地址.
+	262     pmd_t *pmd;--------------->指向一个中间目录开始的地址.
+	263     pte_t *pte;--------------->指向一个页表开始的地址.
+
+接下来:
+
+	291     pfn = start_pfn;
+	292     pgd_idx = pgd_index((pfn<<PAGE_SHIFT) + PAGE_OFFSET);
+	293     pgd = pgd_base + pgd_idx;
+
+决定从全局目录的哪项开始分配.
+
+	667 #define pgd_index(address) (((address) >> PGDIR_SHIFT) & (PTRS_PER_PGD - 1)) 
+	#define PGDIR_SHIFT 22   
+	#define PTRS_PER_PGD    1024
+
+如果pfn是0,那么得到的pgd_idx=768(跟前面一样^_^),也就是从虚拟地址0xc0000000处开始映射,定位pgd到768项,也就是从目录表中的768项开始设置.从768到1024这256个表项被linux内核设置为内核目录项,低768个目录项被用户空间使用pgd = pgd_base + pgd_idx;pgd便指向了第768个表项.
+
+接下来就是进入循环,准备填充从768号全局目录表项开始剩余目录项的内容.
+
+	295         pmd = one_md_table_init(pgd);
+
+one_md_table_init(pgd)是根据pgd找到指向的pmd表.在没有开启PAE的情况下,直接返回pgd.第一阶段映射时,start=0x00000000 end=0x100000.(4k的情况下)起始页框(page frame number)pfn=start_pfn=0.
+
+随后设置pmd_idx=0,进入第二个for循环,在linux的3级映射模型中,是要设置pmd表的,但是在2级映射中忽略,只循环一次,直接进行页表的pte设置.
+
+
+TIPS START:
+
+在2.6.11后，Linux采用四级分页模型，这四级页目录分别为:
+<ul>
+<li>页全局目录(Page Global Directory)</li>
+<li>页上级目录(Page Upper Directory)</li>
+<li>页中间目录(Page Middle Directory)</li>
+<li>页表(Page Table)</li>
+</ul>
+PTRS_PER_PTE，PTRS_PER_PMD，PTRS_PER_PUD以及PTRS_PER_PGD用于计算页表，页中间目录，页上级目录和页全局目录表中表项的个数。当PAE被禁止时，它们产生的值分别为1024，1，1和1024。当PAE被激活时，产生的值分别为512，512，1和4。
+
+
+注意：PAE关闭时，PGD就是PDT，此时不用PUD，PMD。虽然它们两个在线性地址中，但长度为0，2^0=1，也就是说，它们都是有一个数组元素的数组。当PAE启动时，PGD指示四个PDPT entry中的哪一个， 不使用PUD。
+
+
+这里需要注意的是，如果是32位未开启PAE，则pud_offset，pmd_offset返回的仍是pgd；
+
+
+TIPS END
+
+所以在没有启动PAE的系统中,PTRS_PER_PMD =1:
+
+	305         for (; pmd_idx < PTRS_PER_PMD && pfn < end_pfn; 
+	306              pmd++, pmd_idx++)
+	307             unsigned int addr = pfn * PAGE_SIZE + PAGE_OFFSET;
+
+只执行一次.循环中直接设置PTE,而这里的pmd其实就是pgd(PAE未开启的情况下),307行计算出了对应的线性地址.跳过if(use_pse)直接来到下面:
+
+	341             pte = one_page_table_init(pmd);
+	342 
+	343             pte_ofs = pte_index((pfn<<PAGE_SHIFT) + PAGE_OFFSET);
+	344             pte += pte_ofs;
+
+这里341行非常重要,它会去从已经映射的内存中分配一页内存来作为页表空间,并且设置了全局目录表中的内容.我们好好分析下:
+
+	 95 static pte_t * __init one_page_table_init(pmd_t *pmd)
+	 96 {
+	 97     if (!(pmd_val(*pmd) & _PAGE_PRESENT)) {
+	 98         pte_t *page_table = (pte_t *)alloc_low_page();
+	 99
+	100         paravirt_alloc_pte(&init_mm, __pa(page_table) >> PAGE_SHIFT);
+	101         set_pmd(pmd, __pmd(__pa(page_table) | _PAGE_TABLE));
+	102         BUG_ON(page_table != pte_offset_kernel(pmd, 0));
+	103     }
+	104
+	105     return pte_offset_kernel(pmd, 0);
+	106 }
+
+看98行:
+
+	 5 static inline void *alloc_low_page(void)
+	 6 {
+	 7     return alloc_low_pages(1); 
+	 8 } 
+
+	 67 /* 
+	 68  * Pages returned are already directly mapped.
+	 69  * 
+	 70  * Changing that is likely to break Xen, see commit:
+	 71  * 
+	 72  *    279b706 x86,xen: introduce x86_init.mapping.pagetable_reserve
+	 73  * 
+	 74  * for detailed information.
+	 75  */
+	 76 __ref void *alloc_low_pages(unsigned int num)
+	 77 {  
+	 78     unsigned long pfn;
+	 79     int i;
+	 80    
+	 81     if (after_bootmem) {			//这个时候还没有bootmem所以不进入
+	 82         unsigned int order;
+	 83    
+	 84         order = get_order((unsigned long)num << PAGE_SHIFT);
+	 85         return (void *)__get_free_pages(GFP_ATOMIC | __GFP_NOTRACK |
+	 86                         __GFP_ZERO, order);
+	 87     }
+	 88    
+	 89     if ((pgt_buf_end + num) > pgt_buf_top || !can_use_brk_pgt) {
+	 90         unsigned long ret;
+	 91         if (min_pfn_mapped >= max_pfn_mapped)
+	 92             panic("alloc_low_pages: ran out of memory");
+	 93         ret = memblock_find_in_range(min_pfn_mapped << PAGE_SHIFT,
+	 94                     max_pfn_mapped << PAGE_SHIFT,
+	 95                     PAGE_SIZE * num , PAGE_SIZE);
+	 96         if (!ret)
+	 97             panic("alloc_low_pages: can not alloc memory");
+	 98         memblock_reserve(ret, PAGE_SIZE * num);
+	 99         pfn = ret >> PAGE_SHIFT;
+	100     } else {
+	101         pfn = pgt_buf_end;
+	102         pgt_buf_end += num;
+	103         printk(KERN_DEBUG "BRK [%#010lx, %#010lx] PGTABLE\n",
+	104             pfn << PAGE_SHIFT, (pgt_buf_end << PAGE_SHIFT) - 1);
+	105     }
+	106    
+	107     for (i = 0; i < num; i++) {
+	108         void *adr;
+	109    
+	110         adr = __va((pfn + i) << PAGE_SHIFT);
+	111         clear_page(adr);
+	112     }
+	113    
+	114     return __va(pfn << PAGE_SHIFT);
+	115 }
+
+看89行的if,还记得pgt_buf_end还有pgt_buf_top么?上面内存曾经通过early_alloc_pgt_buf()扩展了brk,并且设置了这两个值,就是为了这里做准备的.因为才到映射0x0-ISA_END_ADDRESS(0x100000)的内存,所以上面扩展的brk还够用,这里直接从brk分配出一页,加大pgt_buf_end.然后函数返回分配的页表的物理地址.
+
+回到one_page_table_init中的,paravirt_alloc_pte(&init_mm, __pa(page_table) >> PAGE_SHIFT);这个函数定义如下:
+
+	375 static inline void paravirt_alloc_pte(struct mm_struct *mm, unsigned long pfn)
+	376 {
+	377     PVOP_VCALL2(pv_mmu_ops.alloc_pte, mm, pfn);
+	378 } 
+
+	632 #define PVOP_VCALL2(op, arg1, arg2)                 \
+	633     __PVOP_VCALL(op, "", "", PVOP_CALL_ARG1(arg1),          \
+	634              PVOP_CALL_ARG2(arg2))
+
+	595 #define __PVOP_VCALL(op, pre, post, ...)                \ 
+	596     ____PVOP_VCALL(op, CLBR_ANY, PVOP_VCALL_CLOBBERS,       \
+	597                VEXTRA_CLOBBERS,                 \
+	598                pre, post, ##__VA_ARGS__)
+
+	581 #define ____PVOP_VCALL(op, clbr, call_clbr, extra_clbr, pre, post, ...) \
+	582     ({                              \
+	583         PVOP_VCALL_ARGS;                    \
+	584         PVOP_TEST_NULL(op);                 \
+	585         asm volatile(pre                    \
+	586                  paravirt_alt(PARAVIRT_CALL)        \
+	587                  post                   \
+	588                  : call_clbr                \
+	589                  : paravirt_type(op),           \
+	590                    paravirt_clobber(clbr),          \
+	591                    ##__VA_ARGS__                \
+	592                  : "memory", "cc" extra_clbr);      \
+	593     })
+
+!!!!这是个什么鬼?!!! 以后分析啦...如果重要的话.
+
+
+还是回到one_page_table_init,到set_pmd(pmd, __pmd(__pa(page_table) | _PAGE_TABLE));不多说,就是将全局目录表中对应的项指向到刚刚分配的页表地址.最后到retrun,返回页表地址
+
+	return pte_offset_kernel(pmd, 0);
+
+	555 static inline pte_t *pte_offset_kernel(pmd_t *pmd, unsigned long address)
+	556 {
+	557     return (pte_t *)pmd_page_vaddr(*pmd) + pte_index(address);
+	558 }
+
+	513 static inline unsigned long pmd_page_vaddr(pmd_t pmd) 
+	514 {
+	515     return (unsigned long)__va(pmd_val(pmd) & PTE_PFN_MASK);
+	516 }
+
+回到kernel_physical_mapping_init()中,这时候已经设置了全局目录表项,页表也有了,这里就开始设置页表的表项了:
+
+	341             pte = one_page_table_init(pmd);
+	342    
+	343             pte_ofs = pte_index((pfn<<PAGE_SHIFT) + PAGE_OFFSET);
+	344             pte += pte_ofs;
+	345             for (; pte_ofs < PTRS_PER_PTE && pfn < end_pfn;
+	346                  pte++, pfn++, pte_ofs++, addr += PAGE_SIZE) {
+	347                 pgprot_t prot = PAGE_KERNEL;
+	348                 /*
+	349                  * first pass will use the same initial
+	350                  * identity mapping attribute.
+	351                  */
+	352                 pgprot_t init_prot = __pgprot(PTE_IDENT_ATTR);
+	353    
+	354                 if (is_kernel_text(addr))	//映射的地址是否是内核代码所在的地址
+	355                     prot = PAGE_KERNEL_EXEC;
+	356    
+	357                 pages_4k++;
+	358                 if (mapping_iter == 1) {
+	359                     set_pte(pte, pfn_pte(pfn, init_prot));
+	360                     last_map_addr = (pfn << PAGE_SHIFT) + PAGE_SIZE;
+	361                 } else
+	362                     set_pte(pte, pfn_pte(pfn, prot));
+	363             }
+
+kernel_physical_mapping_init()函数工作完成后,返回return last_map_addr,即最后映射到的线性地址.接着我们看到init_memory_mapping()中:
+
+	392     add_pfn_range_mapped(start >> PAGE_SHIFT, ret >> PAGE_SHIFT);
+	393 
+	394     return ret >> PAGE_SHIFT; 
+
+	345 static void add_pfn_range_mapped(unsigned long start_pfn, unsigned long end_pfn)
+	346 {
+	347     nr_pfn_mapped = add_range_with_merge(pfn_mapped, E820_X_MAX,
+	348                          nr_pfn_mapped, start_pfn, end_pfn);
+	349     nr_pfn_mapped = clean_sort_range(pfn_mapped, E820_X_MAX);
+	350 
+	351     max_pfn_mapped = max(max_pfn_mapped, end_pfn);
+	352 
+	353     if (start_pfn < (1UL<<(32-PAGE_SHIFT)))
+	354         max_low_pfn_mapped = max(max_low_pfn_mapped,
+	355                      min(end_pfn, 1UL<<(32-PAGE_SHIFT)));
+	356 }
+
+这里会设置三个值nr_pfn_mapped,max_pfn_mapped,max_low_pfn_mapped.设置这三个值的作用是什么呢?我们先来猜测一下,还记得上面的alloc_low_pages()么?如果brk扩展的内存分配完后,会来到这里:
+
+	 89     if ((pgt_buf_end + num) > pgt_buf_top || !can_use_brk_pgt) {
+	 90         unsigned long ret;
+	 91         if (min_pfn_mapped >= max_pfn_mapped)
+	 92             panic("alloc_low_pages: ran out of memory");
+	 93         ret = memblock_find_in_range(min_pfn_mapped << PAGE_SHIFT,
+	 94                     max_pfn_mapped << PAGE_SHIFT,
+	 95                     PAGE_SIZE * num , PAGE_SIZE);
+	 96         if (!ret)
+	 97             panic("alloc_low_pages: can not alloc memory");
+	 98         memblock_reserve(ret, PAGE_SIZE * num);
+	 99         pfn = ret >> PAGE_SHIFT;
+	100     }
+
+这个时候会通过memblock_find_in_range来分配页表空间:
+
+	 239 /**
+	 240  * memblock_find_in_range - find free area in given range
+	 241  * @start: start of candidate range
+	 242  * @end: end of candidate range, can be %MEMBLOCK_ALLOC_{ANYWHERE|ACCESSIBLE}
+	 243  * @size: size of free area to find
+	 244  * @align: alignment of free area to find
+	 245  * 
+	 246  * Find @size free area aligned to @align in the specified range.
+	 247  *
+	 248  * RETURNS:
+	 249  * Found address on success, 0 on failure.
+	 250  */
+	 251 phys_addr_t __init_memblock memblock_find_in_range(phys_addr_t start,
+	 252                     phys_addr_t end, phys_addr_t size,
+	 253                     phys_addr_t align)
+	 254 {  
+	 255     return memblock_find_in_range_node(size, align, start, end,
+	 256                         NUMA_NO_NODE);
+	 257 }  
+
+	 170 /**                                                                                                                                                       
+	 171  * memblock_find_in_range_node - find free area in given range and node
+	 172  * @size: size of free area to find
+	 173  * @align: alignment of free area to find
+	 174  * @start: start of candidate range
+	 175  * @end: end of candidate range, can be %MEMBLOCK_ALLOC_{ANYWHERE|ACCESSIBLE}
+	 176  * @nid: nid of the free area to find, %NUMA_NO_NODE for any node
+	 177  *
+	 178  * Find @size free area aligned to @align in the specified range and node.
+	 179  *
+	 180  * When allocation direction is bottom-up, the @start should be greater
+	 181  * than the end of the kernel image. Otherwise, it will be trimmed. The
+	 182  * reason is that we want the bottom-up allocation just near the kernel
+	 183  * image so it is highly likely that the allocated memory and the kernel
+	 184  * will reside in the same node.
+	 185  *
+	 186  * If bottom-up allocation failed, will try to allocate memory top-down.
+	 187  *
+	 188  * RETURNS:
+	 189  * Found address on success, 0 on failure.
+	 190  */
+	 191 phys_addr_t __init_memblock memblock_find_in_range_node(phys_addr_t size,
+	 192                     phys_addr_t align, phys_addr_t start,
+	 193                     phys_addr_t end, int nid)
+	 194 {  
+	 195     phys_addr_t kernel_end, ret;
+	 196    
+	 197     /* pump up @end */
+	 198     if (end == MEMBLOCK_ALLOC_ACCESSIBLE)
+	 199         end = memblock.current_limit;
+	 200    
+	 201     /* avoid allocating the first page */
+	 202     start = max_t(phys_addr_t, start, PAGE_SIZE);
+	 203     end = max(start, end);
+	 204     kernel_end = __pa_symbol(_end);
+	 205    
+	 206     /*
+	 207      * try bottom-up allocation only when bottom-up mode
+	 208      * is set and @end is above the kernel image.
+	 209      */
+	 210     if (memblock_bottom_up() && end > kernel_end) {
+	 211         phys_addr_t bottom_up_start;
+	 212    
+	 213         /* make sure we will allocate above the kernel */
+	 214         bottom_up_start = max(start, kernel_end);
+	 215    
+	 216         /* ok, try bottom-up allocation first */
+	 217         ret = __memblock_find_range_bottom_up(bottom_up_start, end,
+	 218                               size, align, nid);
+	 219         if (ret)
+	 220             return ret;
+	 221    
+	 222         /*
+	 223          * we always limit bottom-up allocation above the kernel,
+	 224          * but top-down allocation doesn't have the limit, so
+	 225          * retrying top-down allocation may succeed when bottom-up
+	 226          * allocation failed.
+	 227          *
+	 228          * bottom-up allocation is expected to be fail very rarely,
+	 229          * so we use WARN_ONCE() here to see the stack trace if
+	 230          * fail happens.
+	 231          */
+	 232         WARN_ONCE(1, "memblock: bottom-up allocation failed, "
+	 233                  "memory hotunplug may be affected\n");
+	 234     }
+	 235    
+	 236     return __memblock_find_range_top_down(start, end, size, align, nid);
+	 237 }  
+
