@@ -944,7 +944,7 @@ kernel_physical_mapping_init()函数工作完成后,返回return last_map_addr,�
 	355                      min(end_pfn, 1UL<<(32-PAGE_SHIFT)));
 	356 }
 
-这里会设置三个值nr_pfn_mapped,max_pfn_mapped,max_low_pfn_mapped.设置这三个值的作用是什么呢?我们先来猜测一下,还记得上面的alloc_low_pages()么?如果brk扩展的内存分配完后,会来到这里:
+这里会设置三个值nr_pfn_mapped,max_pfn_mapped,max_low_pfn_mapped.设置这三个值的作用是什么呢?我们先来猜测一下,还记得上面的alloc_low_pages()么?如果brk扩展的内存分配完后,会来到这里.看这里就使用到了max_pfn_mapped,在brk不足或者不能使用的情况下,就会从已经映射的内存空间中分配内存.
 
 	 89     if ((pgt_buf_end + num) > pgt_buf_top || !can_use_brk_pgt) {
 	 90         unsigned long ret;
@@ -959,7 +959,7 @@ kernel_physical_mapping_init()函数工作完成后,返回return last_map_addr,�
 	 99         pfn = ret >> PAGE_SHIFT;
 	100     }
 
-这个时候会通过memblock_find_in_range来分配页表空间:
+这个时候会通过memblock_find_in_range来分配页表空间,这个函数先会尝试以bottom-up的方式进行分配,如果不成功会以top_down的方式分配.
 
 	 239 /**
 	 240  * memblock_find_in_range - find free area in given range
@@ -981,7 +981,7 @@ kernel_physical_mapping_init()函数工作完成后,返回return last_map_addr,�
 	 256                         NUMA_NO_NODE);
 	 257 }  
 
-	 170 /**                                                                                                                                                       
+	 170 /** 
 	 171  * memblock_find_in_range_node - find free area in given range and node
 	 172  * @size: size of free area to find
 	 173  * @align: alignment of free area to find
