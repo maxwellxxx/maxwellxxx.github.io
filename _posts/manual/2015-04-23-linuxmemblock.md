@@ -80,15 +80,22 @@ category: manual
 
 几个管理memblock的函数如下:
 <ul>
-<li>int memblock_add(phys_addr_t base, phys_addr_t size);向memory或者reserved区域中添加给定的内存区.新加入的region需要经过检查，如果与原先的region有重叠，则需要合并在原先的memory region中，否则的话就新建一个memory region.</li>
-<li>int memblock_remove(phys_addr_t base, phys_addr_t size);从指定的memblock中移除指定物理地址所指定的memory region.如果所指定的区域是存在区域的一部分，则涉及到调整region大小，或者将一个region拆分成为两个region.</li>
-<li>int memblock_free(phys_addr_t base, phys_addr_t size);使用该函数相当于释放物理内存，释放的内存会从memblock.reserved中移除</li>
-<li>int memblock_reserve(phys_addr_t base, phys_addr_t size);使用该函数相当于申请物理内存，申请的内存会加入memblock.reserved</li>
+<li>int memblock_add(phys_addr_t base, phys_addr_t size);向memory区域中添加给定的内存区.新加入的region需要经过检查，如果与原先的region有重叠，则需要合并在原先的memory region中，否则的话就新建一个memory region.</li>
+<li>int memblock_remove(phys_addr_t base, phys_addr_t size);从memory中移除指定物理地址所指定的memory region.如果所指定的区域是存在区域的一部分，则涉及到调整region大小，或者将一个region拆分成为两个region.</li>
+<li>int memblock_free(phys_addr_t base, phys_addr_t size);从reserved中移除指定物理地址所指定的memory region.如果所指定的区域是存在区域的一部分，则涉及到调整region大小，或者将一个region拆分成为两个region.</li>
+<li>int memblock_reserve(phys_addr_t base, phys_addr_t size);向reserved区域中添加给定的内存区.新加入的region需要经过检查，如果与原先的region有重叠，则需要合并在原先的region中，否则的话就新建一个region.</li>
 <li>phys_addr_t memblock_find_in_range_node(phys_addr_t size, phys_addr_t align, phys_addr_t start, phys_addr_t end,int nid);根据给定的范围从node中找到一块内存区域在memory中但是不在reserved中.</li>
 <li>phys_addr_t memblock_find_in_range()实际调用上者,不过是从本节点找而已.</li>
 </ul>
 
+如果要分配内存,就简单了
+<ul>
+<li>1.memblock_find_in_range(),找到空闲内存区域.</li>
+<li>2.memblock_reserve()直接将找到的内存加入到reserved区域就分配成功了.</li>
+</ul>
 
 
+##内核生命周期中的memblock
 
+如果从整个linux生命周期来讲,涉及到各种初始化等,这里来详细分析:
 
