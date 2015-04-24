@@ -380,3 +380,48 @@ memblock_remove_range实现差不多相反的功能.
 ##总结
 
 memblock内存管理是将所有的物理内存放到memblock.memory中作为可用内存来管理,分配过的内存只加入到memblock.reserved中,并不从memory中移出.同理释放内存也会加入到memory中.也就是说,memory在fill过后基本就是不动的了.申请和分配内存仅仅修改reserved就达到目的.在初始化阶段没有那么多复杂的内存操作场景，甚至很多地方都是申请了内存做永久使用的,所以这样的内存管理方式已经足够凑合着用了...毕竟内核也不指望用它一辈子.
+
+再者就是,内核中有好多地方并不使用memblock_alloc()分配内存,而是需要从指定的内存范围里分配内存,例子就是当_brk已经用完的情况下,需要分配页表空间的情况:
+
+	 file:arch/x86/mm/init.c   
+	 76 __ref void *alloc_low_pages(unsigned int num)
+	 77 {  
+	 78     unsigned long pfn;
+	 79     int i;
+	 80    
+	 81     if (after_bootmem) {
+	 82         unsigned int order;
+	 83    
+	 84         order = get_order((unsigned long)num << PAGE_SHIFT);
+	 85         return (void *)__get_free_pages(GFP_ATOMIC | __GFP_NOTRACK |
+	 86                         __GFP_ZERO, order);
+	 87     }
+	 88    
+	 89     if ((pgt_buf_end + num) > pgt_buf_top || !can_use_brk_pgt) {
+	 90         unsigned long ret;
+	 91         if (min_pfn_mapped >= max_pfn_mapped)
+	 92             panic("alloc_low_pages: ran out of memory");
+	 93         ret = memblock_find_in_range(min_pfn_mapped << PAGE_SHIFT,
+	 94                     max_pfn_mapped << PAGE_SHIFT,
+	 95                     PAGE_SIZE * num , PAGE_SIZE);
+	 96         if (!ret)
+	 97             panic("alloc_low_pages: can not alloc memory");
+	 98         memblock_reserve(ret, PAGE_SIZE * num);
+	 99         pfn = ret >> PAGE_SHIFT;
+	100     } else {
+	101         pfn = pgt_buf_end;
+	102         pgt_buf_end += num;
+	103         printk(KERN_DEBUG "BRK [%#010lx, %#010lx] PGTABLE\n",
+	104             pfn << PAGE_SHIFT, (pgt_buf_end << PAGE_SHIFT) - 1);
+	105     }
+	106    
+	107     for (i = 0; i < num; i++) {
+	108         void *adr;
+	109    
+	110         adr = __va((pfn + i) << PAGE_SHIFT);
+	111         clear_page(adr);
+	112     }
+	113    
+	114     return __va(pfn << PAGE_SHIFT);
+	115 }
+
