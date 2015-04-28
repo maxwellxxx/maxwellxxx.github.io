@@ -1039,13 +1039,13 @@ kernel_physical_mapping_init()函数工作完成后,返回return last_map_addr,�
 	 212    
 	 213         /* make sure we will allocate above the kernel */
 	 214         bottom_up_start = max(start, kernel_end);
-	 215    
+	 215 
 	 216         /* ok, try bottom-up allocation first */
 	 217         ret = __memblock_find_range_bottom_up(bottom_up_start, end,
 	 218                               size, align, nid);
 	 219         if (ret)
 	 220             return ret;
-	 221    
+	 221 
 	 222         /*
 	 223          * we always limit bottom-up allocation above the kernel,
 	 224          * but top-down allocation doesn't have the limit, so
@@ -1059,7 +1059,9 @@ kernel_physical_mapping_init()函数工作完成后,返回return last_map_addr,�
 	 232         WARN_ONCE(1, "memblock: bottom-up allocation failed, "
 	 233                  "memory hotunplug may be affected\n");
 	 234     }
-	 235    
+	 235
 	 236     return __memblock_find_range_top_down(start, end, size, align, nid);
-	 237 }  
+	 237 } 
+
+在系统初始化前期,memblock_bottom_up()还是会返回false(参见博客memblock),所以这个时候会从
 

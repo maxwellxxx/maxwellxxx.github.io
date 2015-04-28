@@ -1061,5 +1061,7 @@ kernel_physical_mapping_init()函数工作完成后,返回return last_map_addr,�
 	 234     }
 	 235
 	 236     return __memblock_find_range_top_down(start, end, size, align, nid);
-	 237 }  
+	 237 } 
+
+在系统初始化前期,memblock_bottom_up()还是会返回false(参见博客memblock),所以这个时候会以top_down的方式分配.
 
