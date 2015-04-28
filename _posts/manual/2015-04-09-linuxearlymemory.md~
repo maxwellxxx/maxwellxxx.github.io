@@ -416,6 +416,19 @@ start_arch中的1088 early_alloc_pgt_buf();它是为前期的页表分配空间.
 	278     return ret;
 	279 } 
 
+当extend_brk()后,就会立即执行函数reserve_brk();
+
+	1088     early_alloc_pgt_buf();
+	1089 
+	1090     /*
+	1091      * Need to conclude brk, before memblock_x86_fill()
+	1092      *  it could use memblock_find_in_range, could overlap with
+	1093      *  brk area.
+	1094      */
+	1095     reserve_brk();
+
+reserve_brk(),将brk申明成已分配内存,参考memblock博文.
+
 
 分配完初始阶段的部分页表空间后就要开始真正的建立页表了!
 
