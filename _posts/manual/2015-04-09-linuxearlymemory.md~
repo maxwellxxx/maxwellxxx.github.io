@@ -212,6 +212,8 @@ PTE_IDENT_ATTR常量,可见定义arch/x86/include/asm/pgtable_types.h:
 
 Linux 启动以来自此加载的 gdt 已有以上若干个段的描述符在编译 vmlinux 的时候初始化了,其他没被初始化的地方暂时保留。
 
+
+
 ##文明世界---setup_arch()
 
 
@@ -335,6 +337,8 @@ start_arch()中接着,find_low_pfn_range();它根据max_pfn是否大于MAXMEM_PF
 </ul>
 
 而且需要注意的是,这个时候内核基本不能动态分配管理内存,上面少数(我记得是唯一)动态分配内存的方式也仅仅是从brk中分配页表.
+
+
 ###着手建立最终内核页表
 
 首先我们来看几个全局变量的值(假设开启高端内存).
@@ -429,7 +433,7 @@ start_arch中的1088 early_alloc_pgt_buf();它是为前期的页表分配空间.
 
 reserve_brk(),将brk申明成已分配内存,参考memblock博文.
 
-
+### 1--------低端内存映射
 分配完初始阶段的部分页表空间后就要开始真正的建立页表了!
 
 	555 void __init init_mem_mapping(void)
@@ -518,13 +522,32 @@ reserve_brk(),将brk申明成已分配内存,参考memblock博文.
 	394     return ret >> PAGE_SHIFT; 
 	395 } 
 
-map_range结构如下,split_mem_range()主要是按照4K和2M对齐的两种方式来重新确定内存开始和结束的地址.即在for循环中,会循环两次,分别按照4K和2M来映射内存.而本文中,我们只讨论4K对齐的情况.
+map_range结构如下:
 
 	150 struct map_range { 
 	151     unsigned long start;	//内存开始地址
 	152     unsigned long end;	//内存结束地址
 	153     unsigned page_size_mask;//对齐mask
 	154 }; 
+
+split_mem_range()根据传入的内存start和end做四舍五入的对齐操作（即round_up和round_down），并根据对齐的情况，把开始、末尾的不对齐部分及中间部分分成了三段，使用save_mr()将其存放在init_mem_mapping()的局部变量数组mr中。划分开来主要是为了允许各部分可以映射不同页面大小，然后如果各划分开来的部分是连续的，映射页面大小也是一致的，则将其合并。最后将映射的情况打印出来，在shell上使用dmesg命令可以看到该打印信息:
+
+	[    0.000000] init_memory_mapping: [mem 0x00000000-0x000fffff]
+	[    0.000000]  [mem 0x00000000-0x000fffff] page 4k
+	[    0.000000] BRK [0x01fe1000, 0x01fe1fff] PGTABLE
+	[    0.000000] BRK [0x01fe2000, 0x01fe2fff] PGTABLE
+	[    0.000000] BRK [0x01fe3000, 0x01fe3fff] PGTABLE
+	[    0.000000] init_memory_mapping: [mem 0x13fe00000-0x13fffffff]
+	[    0.000000]  [mem 0x13fe00000-0x13fffffff] page 2M
+	[    0.000000] BRK [0x01fe4000, 0x01fe4fff] PGTABLE
+	[    0.000000] init_memory_mapping: [mem 0x13c000000-0x13fdfffff]
+	[    0.000000]  [mem 0x13c000000-0x13fdfffff] page 2M
+	[    0.000000] init_memory_mapping: [mem 0x100000000-0x13bffffff]
+	[    0.000000]  [mem 0x100000000-0x13bffffff] page 2M
+	[    0.000000] init_memory_mapping: [mem 0x00100000-0xbff9ffff]
+	[    0.000000]  [mem 0x00100000-0x001fffff] page 4k
+	[    0.000000]  [mem 0x00200000-0xbfdfffff] page 2M
+	[    0.000000]  [mem 0xbfe00000-0xbff9ffff] page 4k
 
 重新确定内存范围后,来到kernel_physical_mapping_init(),这个才是真正的建立页表,设置页表项,进行内存映射,注意,这里没有定义PAE.
 
@@ -863,7 +886,7 @@ TIPS END
 	114     return __va(pfn << PAGE_SHIFT);
 	115 }
 
-看89行的if,还记得pgt_buf_end还有pgt_buf_top么?上面内存曾经通过early_alloc_pgt_buf()扩展了brk,并且设置了这两个值,就是为了这里做准备的.因为才到映射0x0-ISA_END_ADDRESS(0x100000)的内存,所以上面扩展的brk还够用,这里直接从brk分配出一页,加大pgt_buf_end.然后函数返回分配的页表的物理地址.
+看89行的if,还记得pgt_buf_end还有pgt_buf_top么?上面内存曾经通过early_alloc_pgt_buf()扩展了brk,并且设置了这两个值,就是为了这里做准备的.因为才到映射0x0-ISA_END_ADDRESS(0x100000)的内存(表示ISA总线上设备的地址末尾。),所以上面扩展的brk还够用,这里直接从brk分配出一页,加大pgt_buf_end.然后函数返回分配的页表的物理地址.
 
 回到one_page_table_init中的,paravirt_alloc_pte(&init_mm, __pa(page_table) >> PAGE_SHIFT);这个函数定义如下:
 
@@ -938,6 +961,8 @@ TIPS END
 	362                     set_pte(pte, pfn_pte(pfn, prot));
 	363             }
 
+kernel_physical_mapping_init函数里面有个标签repeat，通过mapping_iter结合goto语句的控制，该标签下的代码将会执行两次。第一次执行时，内存映射设置如同head_32.s里面的一样，将页面属性设置为PTE_IDENT_ATTR；第二次执行时，会根据内核的情况设置具体的页面属性，默认是设置为PAGE_KERNEL，但如果经过is_kernel_text判断为内核代码空间，则设置为PAGE_KERNEL_EXEC。最终建立内核页表的同时，完成内存映射。
+
 kernel_physical_mapping_init()函数工作完成后,返回return last_map_addr,即最后映射到的线性地址.接着我们看到init_memory_mapping()中:
 
 	392     add_pfn_range_mapped(start >> PAGE_SHIFT, ret >> PAGE_SHIFT);
@@ -957,7 +982,9 @@ kernel_physical_mapping_init()函数工作完成后,返回return last_map_addr,�
 	355                      min(end_pfn, 1UL<<(32-PAGE_SHIFT)));
 	356 }
 
-这里会设置三个值nr_pfn_mapped,max_pfn_mapped,max_low_pfn_mapped.设置这三个值的作用是什么呢?我们先来猜测一下,还记得上面的alloc_low_pages()么?如果brk扩展的内存分配完后,会来到这里.看这里就使用到了max_pfn_mapped,在brk不足或者不能使用的情况下,就会从已经映射的内存空间中分配内存.
+这里会设置三个值nr_pfn_mapped,max_pfn_mapped,max_low_pfn_mapped.设置这三个值的作用是什么呢?第一:该函数主要是将新增内存映射的物理页框范围加入到全局数组pfn_mapped中，其中nr_pfn_mapped用于表示数组中的有效项数量。由此一来，则可以通过内核函数pfn_range_is_mapped来判断指定的物理内存是否被映射，避免了重复映射的情况。
+
+另外,还记得上面的alloc_low_pages()么?如果brk扩展的内存分配完后,会来到这里.看这里就使用到了max_pfn_mapped,在brk不足或者不能使用的情况下,就会从已经映射的内存空间中分配内存.这个时候的调用关系是：one_page_table_init()->alloc_low_page()->alloc_low_pages()->memblock_reserve()最后申请而得内存.
 
 	 89     if ((pgt_buf_end + num) > pgt_buf_top || !can_use_brk_pgt) {
 	 90         unsigned long ret;
@@ -1063,5 +1090,113 @@ kernel_physical_mapping_init()函数工作完成后,返回return last_map_addr,�
 	 236     return __memblock_find_range_top_down(start, end, size, align, nid);
 	 237 } 
 
-在系统初始化前期,memblock_bottom_up()还是会返回false(参见博客memblock),所以这个时候会从
+在系统初始化前期,memblock_bottom_up()还是会返回false(参见博客memblock),所以这个时候会以top_down的方式分配.
 
+
+再次回到init_mem_mapping(),映射完0-ISA_END_ADDRESS后,这个时候由于memblock_bottom_up()返回false,所以调用memory_map_top_down(ISA_END_ADDRESS, end),这里的end是直接通过max_low_pfn<<PAGE_SHIFT被设置为内核直接映射的最后页框地址(896MB).
+
+	467 static void __init memory_map_top_down(unsigned long map_start,
+	468                        unsigned long map_end)
+	469 {   
+	470     unsigned long real_end, start, last_start;
+	471     unsigned long step_size;
+	472     unsigned long addr;
+	473     unsigned long mapped_ram_size = 0;
+	474     
+	475     /* xen has big range in reserved near end of ram, skip it at first.*/
+	476     addr = memblock_find_in_range(map_start, map_end, PMD_SIZE, PMD_SIZE);
+	477     real_end = addr + PMD_SIZE;
+	478     
+	479     /* step_size need to be small so pgt_buf from BRK could cover it */
+	480     step_size = PMD_SIZE;
+	481     max_pfn_mapped = 0; /* will get exact value next */
+	482     min_pfn_mapped = real_end >> PAGE_SHIFT;
+	483     last_start = start = real_end;
+	484     
+	485     /*
+	486      * We start from the top (end of memory) and go to the bottom.
+	487      * The memblock_find_in_range() gets us a block of RAM from the
+	488      * end of RAM in [min_pfn_mapped, max_pfn_mapped) used as new pages
+	489      * for page table.
+	490      */
+	491     while (last_start > map_start) {
+	492         if (last_start > step_size) {
+	493             start = round_down(last_start - 1, step_size);
+	494             if (start < map_start)
+	495                 start = map_start;
+	496         } else
+	497             start = map_start;
+	498         mapped_ram_size += init_range_memory_mapping(start,
+	499                             last_start);
+	500         last_start = start;
+	501         min_pfn_mapped = last_start >> PAGE_SHIFT;
+	502         if (mapped_ram_size >= step_size)
+	503             step_size = get_new_step_size(step_size);
+	504     }
+	505     
+	506     if (real_end < map_end)
+	507         init_range_memory_mapping(real_end, map_end);
+	508 }  
+
+memory_map_top_down()首先使用memblock_find_in_range尝试查找内存，PMD_SIZE大小的内存（4M），确认建立页表的空间足够，然后开始建立页表，其关键函数是init_range_memory_mapping():
+
+	410 static unsigned long __init init_range_memory_mapping(
+	411                        unsigned long r_start,
+	412                        unsigned long r_end)
+	413 {  
+	414     unsigned long start_pfn, end_pfn;
+	415     unsigned long mapped_ram_size = 0;
+	416     int i;
+	417    
+	418     for_each_mem_pfn_range(i, MAX_NUMNODES, &start_pfn, &end_pfn, NULL) {
+	419         u64 start = clamp_val(PFN_PHYS(start_pfn), r_start, r_end);
+	420         u64 end = clamp_val(PFN_PHYS(end_pfn), r_start, r_end);
+	421         if (start >= end)
+	422             continue;
+	423    
+	424         /*
+	425          * if it is overlapping with brk pgt, we need to
+	426          * alloc pgt buf from memblock instead.
+	427          */
+	428         can_use_brk_pgt = max(start, (u64)pgt_buf_end<<PAGE_SHIFT) >=
+	429                     min(end, (u64)pgt_buf_top<<PAGE_SHIFT);
+	430         init_memory_mapping(start, end);
+	431         mapped_ram_size += end - start;
+	432         can_use_brk_pgt = true;
+	433     }
+	434 
+	435     return mapped_ram_size;
+	436 } 
+
+可以看到init_range_memory_mapping()调用了前面刚分析的init_memory_mapping()函数，由此可知，它将完成内核直接映射区（低端内存）的页表建立。此外可以注意到pgt_buf_end和pgt_buf_top的使用，在init_memory_mapping()函数调用前，变量can_use_brk_pgt的设置主要是为了避免内存空间重叠，仍然使用页表缓冲区空间。不过这只是64bit系统上才会出现的情况，而32bit系统上面则没有，因为32bit系统的kernel_physical_mapping_init()并不使用alloc_low_page()申请内存，所以不涉及。至此，内核低端内存页表建立完毕。
+
+
+### 2----------固定内存映射
+
+
+我们看到内核线性地址第四个GB的前896MB部分映射系统的物理内存。但是，至少128MB的线性地址总是留作他用，因为内核使用这些线性地址实现非连续内存分配 和固定映射的线性地址 。Linux内核中提供了一段虚拟地址用于固定映射，也就是fixed map。
+
+固定映射的线性地址(fix-mapped linear address)是一个固定的线性地地址，它所对应的物理地址不是通过简单的线性转换得到的，而是人为强制指定的。每个固定的线性地址都映射到一块物理内存页。固定映射线性地址能够映射到任何一页物理内存。
+
+还是回到init_mem_mapping(void)里面,当低端内存完成分配以后,紧接着还有一个函数early_ioremap_page_table_range_init():
+
+	518 void __init early_ioremap_page_table_range_init(void)
+	519 {  
+	520     pgd_t *pgd_base = swapper_pg_dir;
+	521     unsigned long vaddr, end;
+	522    
+	523     /*
+	524      * Fixed mappings, only the page table structure has to be
+	525      * created - mappings will be set by set_fixmap():
+	526      */
+	527     vaddr = __fix_to_virt(__end_of_fixed_addresses - 1) & PMD_MASK;
+	528     end = (FIXADDR_TOP + PMD_SIZE - 1) & PMD_MASK;
+	529     page_table_range_init(vaddr, end, pgd_base);
+	530     early_ioremap_reset();
+	531 }
+
+这个函数就是用来建立固定内存映射区域的,固定映射线性地址是从整个线性地址空间的最后4KB即线性地址0xfffff000向低地址进行分配的。在最后4KB空间与固定映射线性地址空间的顶端空留一页（未知原因），固定映射线性地址空间前面的地址空间叫做vmalloc分配的区域，他们之间也空有一页。
+
+固定映射的线性地址基本上是一种类似于0xffffc000这样的常量线性地址，其对应的物理地址不必等于线性地址减去0xc000000，而是通过页表以任意方式建立。因此，每个固定映射的线性地址都映射一个物理内存的页框。
+
+每个固定映射的线性地址都由定义于enum fixed_addresses枚举数据结构中的整型索引来表示：
