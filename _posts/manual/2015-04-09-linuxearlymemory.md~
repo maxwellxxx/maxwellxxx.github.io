@@ -1171,7 +1171,7 @@ memory_map_top_down()首先使用memblock_find_in_range尝试查找内存，PMD_
 可以看到init_range_memory_mapping()调用了前面刚分析的init_memory_mapping()函数，由此可知，它将完成内核直接映射区（低端内存）的页表建立。此外可以注意到pgt_buf_end和pgt_buf_top的使用，在init_memory_mapping()函数调用前，变量can_use_brk_pgt的设置主要是为了避免内存空间重叠，仍然使用页表缓冲区空间。不过这只是64bit系统上才会出现的情况，而32bit系统上面则没有，因为32bit系统的kernel_physical_mapping_init()并不使用alloc_low_page()申请内存，所以不涉及。至此，内核低端内存页表建立完毕。
 
 
-### 2----------固定内存映射
+### 2----------固定内存映射中的高端内存映射
 
 
 我们看到内核线性地址第四个GB的前896MB部分映射系统的物理内存。但是，至少128MB的线性地址总是留作他用，因为内核使用这些线性地址实现非连续内存分配 和固定映射的线性地址 。Linux内核中提供了一段虚拟地址用于固定映射，也就是fixed map。
@@ -1190,7 +1190,7 @@ memory_map_top_down()首先使用memblock_find_in_range尝试查找内存，PMD_
 	525      * created - mappings will be set by set_fixmap():
 	526      */
 	527     vaddr = __fix_to_virt(__end_of_fixed_addresses - 1) & PMD_MASK;
-	528     end = (FIXADDR_TOP + PMD_SIZE - 1) & PMD_MASK;
+	528     end = (FIXADDR_TOP + PMD_SIZE - 1) & PMD_MASK;  //unsigned long __FIXADDR_TOP = 0xfffff000;
 	529     page_table_range_init(vaddr, end, pgd_base);
 	530     early_ioremap_reset();
 	531 }
@@ -1200,3 +1200,154 @@ memory_map_top_down()首先使用memblock_find_in_range尝试查找内存，PMD_
 固定映射的线性地址基本上是一种类似于0xffffc000这样的常量线性地址，其对应的物理地址不必等于线性地址减去0xc000000，而是通过页表以任意方式建立。因此，每个固定映射的线性地址都映射一个物理内存的页框。
 
 每个固定映射的线性地址都由定义于enum fixed_addresses枚举数据结构中的整型索引来表示：
+
+	enum fixed_addresses {
+	FIX_HOLE,
+	FIX_VSYSCALL,
+	FIX_APIC_BASE,
+	FIX_IO_APIC_BASE_0,
+	...
+	__end_of_fixed_addresses
+	};
+
+每个固定映射的线性地址都存放在线性地址第四个GB的末端。但是各枚举标识的分区并不是从低地址往高地址分布，而是自高地址往低地址分布。fix_to_virt( )函数计算从给定索引开始的常量线性地址：
+
+	inline unsigned long fix_to_virt(const unsigned int idx)
+	{
+	if (idx >= _ _end_of_fixed_addresses)
+	__this_fixmap_does_not_exist( );
+	return (0xfffff000UL (idx << PAGE_SHIFT));
+	}
+
+其中__fix_to_virt宏定义就是用来通过索引来计算相应的固定映射区域的线性地址。
+
+	#define __fix_to_virt(x)         (FIXADDR_TOP - ((x) << PAGE_SHIFT))
+
+对应的有虚拟地址转索引的宏：
+
+	#define __virt_to_fix(x)         ((FIXADDR_TOP - ((x)&PAGE_MASK)) >> PAGE_SHIFT)
+
+这样,就得到了vaddr,end的值,接着是page_table_range_init(vaddr, end, pgd_base):
+
+	205 static void __init
+	206 page_table_range_init(unsigned long start, unsigned long end, pgd_t *pgd_base
+	207 { 
+	208     int pgd_idx, pmd_idx;
+	209     unsigned long vaddr;
+	210     pgd_t *pgd;
+	211     pmd_t *pmd;
+	212     pte_t *pte = NULL;
+	213     unsigned long count = page_table_range_init_count(start, end);
+	214     void *adr = NULL;
+	215 
+	216     if (count)
+	217         adr = alloc_low_pages(count);
+	218 
+	219     vaddr = start;
+	220     pgd_idx = pgd_index(vaddr);
+	221     pmd_idx = pmd_index(vaddr);
+	222     pgd = pgd_base + pgd_idx;
+	223 
+	224     for ( ; (pgd_idx < PTRS_PER_PGD) && (vaddr != end); pgd++, pgd_idx++) {
+	225         pmd = one_md_table_init(pgd);
+	226         pmd = pmd + pmd_index(vaddr);
+	227         for (; (pmd_idx < PTRS_PER_PMD) && (vaddr != end);
+	228                             pmd++, pmd_idx++) {
+	229             pte = page_table_kmap_check(one_page_table_init(pmd),
+	230                             pmd, vaddr, pte, &adr);
+	231 
+	232             vaddr += PMD_SIZE;
+	233         }
+	234         pmd_idx = 0;
+	235     }
+	236 } 
+
+这里调用了page_table_range_init_count(start, end);
+
+	125 static unsigned long __init
+	126 page_table_range_init_count(unsigned long start, unsigned long end) 
+	127 {
+	128     unsigned long count = 0;
+	129 #ifdef CONFIG_HIGHMEM
+	130     int pmd_idx_kmap_begin = fix_to_virt(FIX_KMAP_END) >> PMD_SHIFT;
+	131     int pmd_idx_kmap_end = fix_to_virt(FIX_KMAP_BEGIN) >> PMD_SHIFT;
+	132     int pgd_idx, pmd_idx;
+	133     unsigned long vaddr;
+	134 
+	135     if (pmd_idx_kmap_begin == pmd_idx_kmap_end)
+	136         return 0;
+	137 
+	138     vaddr = start;
+	139     pgd_idx = pgd_index(vaddr);
+	140  
+	141     for ( ; (pgd_idx < PTRS_PER_PGD) && (vaddr != end); pgd_idx++) {
+	142         for (; (pmd_idx < PTRS_PER_PMD) && (vaddr != end);
+	143                             pmd_idx++) {
+	144             if ((vaddr >> PMD_SHIFT) >= pmd_idx_kmap_begin &&
+	145                 (vaddr >> PMD_SHIFT) <= pmd_idx_kmap_end)
+	146                 count++;  
+	147             vaddr += PMD_SIZE;
+	148         }
+	149         pmd_idx = 0;
+	150     }
+	151 #endif
+	152     return count;
+	153 } 
+
+page_table_range_init_count()用来计算指临时内核映射区间的页表数量(用于管理高端内存)。前面的FIXADDR_START到FIXADDR_TOP是固定映射区，其间有多个索引标识不同功能的映射区间，其中的一个区间FIX_KMAP_BEGIN到FIX_KMAP_END是临时内核映射区。顺便可以看一下两者的定义：
+
+	FIX_KMAP_BEGIN, /* reserved pte's for temporary kernel mappings */
+	FIX_KMAP_END = FIX_KMAP_BEGIN+(KM_TYPE_NR*NR_CPUS)-1
+
+其中KM_TYPE_NR表示“窗口”数量，在高端内存的任意一个页框都可以通过一个“窗口”映射到内核地址空间，调用kmap_atomic可以搭建起“窗口”到高端内存的关系，即建立临时内核映射。而NR_CPUS则表示CPU数量。总的来说就是该临时内核映射区间是为了给各个CPU准备一个指定的窗口空间。由于kmap_atomic()对该区间的使用，所以该区间必须保证其页表连续性。
+
+如果页全局目录数不为0的时候，紧接着page_table_range_init_count()的是alloc_low_pages()前面已经详细分析过了.根据前面early_alloc_pgt_buf()申请保留的页表(__brk中)缓冲空间使用情况来判断，是从页表缓冲空间中申请还是通过memblock算法申请页表内存。
+
+接下来就是进入循环了,前面已经讲过了,one_md_table_init()在没有开启PAE的情况下,还是返回pgd;进入另一个循环,调用page_table_kmap_check()，其入参调用的one_page_table_init()是用于当入参pmd没有页表指向时，创建页表并使其指向被创建的页表。
+
+	155 static pte_t *__init page_table_kmap_check(pte_t *pte, pmd_t *pmd,
+	156                        unsigned long vaddr, pte_t *lastpte,
+	157                        void **adr)
+	158 {   
+	159 #ifdef CONFIG_HIGHMEM
+	160     /*
+	161      * Something (early fixmap) may already have put a pte
+	162      * page here, which causes the page table allocation
+	163      * to become nonlinear. Attempt to fix it, and if it
+	164      * is still nonlinear then we have to bug.
+	165      */
+	166     int pmd_idx_kmap_begin = fix_to_virt(FIX_KMAP_END) >> PMD_SHIFT;
+	167     int pmd_idx_kmap_end = fix_to_virt(FIX_KMAP_BEGIN) >> PMD_SHIFT;
+	168     
+	169     if (pmd_idx_kmap_begin != pmd_idx_kmap_end
+	170         && (vaddr >> PMD_SHIFT) >= pmd_idx_kmap_begin
+	171         && (vaddr >> PMD_SHIFT) <= pmd_idx_kmap_end) {
+	172         pte_t *newpte;
+	173         int i; 
+	174     
+	175         BUG_ON(after_bootmem);
+	176         newpte = *adr;
+	177         for (i = 0; i < PTRS_PER_PTE; i++)
+	178             set_pte(newpte + i, pte[i]);
+	179         *adr = (void *)(((unsigned long)(*adr)) + PAGE_SIZE);
+	180     
+	181         paravirt_alloc_pte(&init_mm, __pa(newpte) >> PAGE_SHIFT);
+	182         set_pmd(pmd, __pmd(__pa(newpte)|_PAGE_TABLE));
+	183         BUG_ON(newpte != pte_offset_kernel(pmd, 0));
+	184         __flush_tlb_all();
+	185     
+	186         paravirt_release_pte(__pa(pte) >> PAGE_SHIFT);
+	187         pte = newpte;
+	188     }
+	189     BUG_ON(vaddr < fix_to_virt(FIX_KMAP_BEGIN - 1)
+	190            && vaddr > fix_to_virt(FIX_KMAP_END)
+	191            && lastpte && lastpte + PTRS_PER_PTE != pte);
+	192 #endif
+	193     return pte;
+	194 }  
+
+可以看到这里在此出现临时内核映射区间的标识（FIX_KMAP_END和FIX_KMAP_BEGIN），检查当前页表初始化的地址是否处于该区间范围，如果是，则把其pte页表的内容拷贝到page_table_range_init()申请的页表空间中，并将newpte新页表的地址设置到pmd中（32bit系统实际上就是页全局目录），然后调用__flush_tlb_all()刷新TLB缓存；如果不是该区间，则仅是由入参中调用的one_page_table_init()被分配到了页表空间。
+
+由此，可以知道early_ioremap_page_table_range_init()主要是做了什么了。这是由于kmap_atomic()对该区间的使用，该区间必须保证其页表连续性。为了避免前期可能对固定映射区已经分配了页表项，基于临时内核映射区间要求页表连续性的保证，所以在此重新申请连续的页表空间将原页表内容拷贝至此。值得注意的是，与低端内存的页表初始化不同的是，这里的页表只是被分配，相应的PTE项并未初始化，这个工作将会交由以后各个固定映射区部分的相关代码调用set_fixmap()来将相关的固定映射区页表与物理内存关联。
+
+
