@@ -34,4 +34,4 @@ category: manual
 <li>串口并口</li>
 </ul>
 而目前无论哪种处理器体系结构,系统都不会只有一种总线,通常都是一些总线的组合.比如常见的x86系统结构一般是:CPU通过FSB(前端总线)连接到内存,通过PCI桥连接到PCI总线.而PCI总线有可以通过PCI-PCI桥,或者PCI-ISA桥连接到ISA总线,结构如图:
-![memory](/images/bus.gif) ![memory](/images/bus2.jpg)
+![bus1](/images/bus.gif) ![bus2](/images/bus2.jpg)
