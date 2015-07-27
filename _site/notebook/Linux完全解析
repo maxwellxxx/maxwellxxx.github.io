@@ -1,0 +1,3058 @@
+bzImage构建过程
+1.准备工作,主要是生成主机程序和脚本相关(顶层Makefile)
+2.顶层Makefile文件指导对init usr arch/x86 kernel mm fs ipc security crypto block drivers sound firmware net lib lib 文件夹进行编译和链接,生成对应的built-in.o文件.比如init目录编译链接命令翻译成:@make -f scripts/Makefile.build obj=init
+
+在KBuild体系中，编译本目录中所有的obj-y所包含文件，然后，调用"$(LD) -r"将它们合并到一个build-in.o文件中。
+还有一个重要的知识点，当在一个目录中编译完成后，会生成一些以.cmd结尾的隐藏文件，如.built-in.o.cmd。这个表示生成对象的具体命令。比如，init/.built-in.o.cmd的内容如下：
+cmd_init/built-in.o :=  ld -m elf_i386   -r -o init/built-in.o init/main.o init/version.o init/mounts.o init/initramfs.o init/calibrate.o
+ 
+就是指built-in.o这个对象，是通过ld命令链接nit/main.o、init/version.o、init/mounts.o、init/initramfs.o和init/calibrate.o而生成的。
+3.在顶层目录中生成vmlinux(链接vmlinux),使用的是.arch/x86/kernel/vmlinux.lds链接脚本.
+4.制作bzImage镜像文件.顶层Makefile工作基本完成,通过包含来到./arch/x86/Makefile的bzImage目标:执行make  -f  scripts/Makefile.build  obj=arch/x86/boot  arch/x86/boot/bzImage到arch/x86/boot的Makefile下
+
+bzImage依赖为arch/x86/boot/setup.bin、arch/x86/boot/vmlinux.bin、arch/x86/boot/tools/build。tools/build 已加到hostprogs-y中去了，会生成相应的主机程序。tools/build主机程序的主要工作是将arch/x86/boot/setup.bin和arch/x86/boot/vmlinux.bin 拼接在一起.
+
+
+setup.elf链接命令:(.setup.elf.cmd)
+cmd_arch/x86/boot/setup.elf := ld -m elf_i386   -T arch/x86/boot/setup.ld arch/x86/boot/a20.o arch/x86/boot/bioscall.o arch/x86/boot/cmdline.o arch/x86/boot/copy.o arch/x86/boot/cpu.o arch/x86/boot/cpucheck.o arch/x86/boot/edd.o arch/x86/boot/header.o arch/x86/boot/main.o arch/x86/boot/mca.o arch/x86/boot/memory.o arch/x86/boot/pm.o arch/x86/boot/pmjump.o arch/x86/boot/printf.o arch/x86/boot/regs.o arch/x86/boot/string.o arch/x86/boot/tty.o arch/x86/boot/video.o arch/x86/boot/video-mode.o arch/x86/boot/version.o arch/x86/boot/video-vga.o arch/x86/boot/video-vesa.o arch/x86/boot/video-bios.o -o arch/x86/boot/setup.elf
+可以看出用arch/x86/boot/setup.ld链接脚本
+setup.bin生成(.setup.bin.cmd):
+cmd_arch/x86/boot/setup.bin := objcopy  -O binary arch/x86/boot/setup.elf arch/x86/boot/setup.bin
+
+
+vmlinux.bin生成(arch/x86/boot的Makefile)
+$(obj)/vmlinux.bin: $(obj)/compressed/vmlinux FORCE
+	$(call if_changed,objcopy)
+首先解决$(obj)/compressed/vmlinux依赖:
+$(obj)/compressed/vmlinux: FORCE
+	$(Q)$(MAKE) $(build)=$(obj)/compressed $@
+
+而arch/x86/boot/compressed/Makefile中vmlinux规则为：
+26$(obj)/vmlinux: $(obj)/vmlinux.lds $(obj)/head_$(BITS).o $(obj)/misc.o $(obj)/piggy.o FORCE
+27         $(call if_changed,ld)
+28         @:
+ 
+compressed目录下Makefile的编译过程要复杂一些，我们看到：
+targets := vmlinux.lds vmlinux vmlinux.bin vmlinux.bin.gz vmlinux.bin.bz2 vmlinux.bin.lzma vmlinux.bin.lzo head_$(BITS).o misc.o piggy.o
+所以大致分为几步：
+1.       通过编译vmlinux.lds.S 生成链接脚本vmlinux.lds。
+2.       使用objcopy命令从顶层目录拷贝刚刚生成的vmlinux到arch/x86/boot/compressed/目录中，并删除其中的.comment段，也就是把注释给删,生成vmlinux.bin。
+3.       根据编译选项，选择一个压缩程序，对上一步的vmlinux.bin进行压缩，由于我使用的默认配置是CONFIG_KERNEL_GZIP，所以生成的是vmlinux.bin.gz文件。
+4.       编译head_32.S生成head_32.o。
+5.       编译misc.c，生成misc.o。
+6.       编译piggy.S汇编源文件，生成piggy.o。
+7.       使用arch/x86/boot/compressed/vmlinux.lds链接脚本将head_32.o，misc.o，piggy.o,vmlinux.bin.gz链接生成arch/x86/boot/compressed/vmlinux。
+ 
+当arch/x86/boot/compressed/目录中的Makefile执行完毕后，会在其目录下生成一个新的vmlinux。随后arch/x86/boot/目录的Makefile使用objcopy命令拷贝刚刚生成的vmlinux除掉ELF header和.note段等无用信息后便在arch/x86/boot/目录下生成另一个二进制格式的vmlinux.bin。
+ 
+一定要注意，此时就有了两个vmlinux，一个在顶层目录，一个在arch/x86/boot/compressed/目录下；还有两个vmlinux.bin，一个在arch/x86/boot/compressed/，另一个在arch/x86/boot/目录下。而最终，我们bzImage需要的vmlinux.bin是arch/x86/boot下的那个。
+ 
+vmlinux.bin和setup.bin工作完成后，就开始链接bzImage了。arch/x86/boot/tools/build 是用于构建最终bzimage 的实用程序，他的作用就是把setup.bin和vmlinux.bin连接到一起：setup.bin 按照512字节对齐，同时负责把rootdev，内核crc，以及setup和kernel 的大小，patch到setup.bin 开头的arch/x86/boot/head_32.S 中。我们来看看.bzImage.cmd的内容：
+cmd_arch/x86/boot/bzImage := arch/x86/boot/tools/build arch/x86/boot/setup.bin arch/x86/boot/vmlinux.bin CURRENT > arch/x86/boot/bzImage
+ 
+很简单的拼接成功后，就会在arch/x86/boot/目录下生成bzImage文件。
+
+
+使用grub作为bootloader启动linux,内存中镜像位置如下:
+	~			~
+	|protected-mode kernel	|
+	#上面就是内核保护模式的代码,即vmlinux.bin(包括解压代码(compressed下代码)和压缩后的vmlinux.bin)
+	#这部分是grub暂时开保护模式后将代码放入的,实模式下不能访问到100000以上内存
+100000	+-----------------------+	
+	|I/O memory hole	|
+0A0000	+-----------------------+	
+	|Reserved for BIOS	|
+	~			~	
+	|Command Line		|
+x+10000	+-----------------------+	
+	|	stack/heap	|	for used by the kernel real-mode
+x+08000	+-----------------------+	
+	|kernel setup		|	//曾经这两部分是分开的源文件,后来第一扇区
+	|kernel boot sector	|	//被遗弃后,所有代码并入header.s中(real-mode)
+	#上面就是bzimage中的setup.bin
+x	+-----------------------+
+	|boot loader		|	<-boot sector entry point 0000:7c00
+001000	+-----------------------+	
+	|Reserved for MBR/BIOS	|
+000800	+-----------------------+
+	|Typically used by MBR	|
+000600	+-----------------------+	
+	|  Bios use only	|
+000000	+-----------------------+
+
+
+实模式下共20根地址线,能访问到0x100000(1M)的内存.寄存器为16位.地址转换方式为"左移四位加偏移"比如es=0x1000,DI=0xffff,那么es:DI=0x1ffff.实模式下段寄存器存放各段基址,通过段+偏移来寻址. 偏移地址称为有效地址,表示操作数所在单元到段首的距离即逻辑地址的偏移地址. 换算出的地址称为线性地址,在实模式下也为物理地址.
+
+由于不同的bootloader由不同大小,x的值(即实模式加载的内存地址也不同),grub将x设为0x9000.grub载入内核大致过程如下:
+1.       调用一个BIOS过程显示“Loading”信息。
+2.       调用一个BIOS过程从磁盘装入内核映像的初始部分，即将内核映像的第一个512字节加载到物理地址0x00090000开始的内存中，而将setup程序的代码（参见后面的内存布局）从地址0x00090200开始存入RAM中。
+3.       调用一个BIOS过程从磁盘中装载其余的内核映像，并把内核映像放入从低地址0x00010000（适用于使用make zImage编译的小内核映像）或者从高地址0x00100000（适用于使用make bzImage编译的大内核映像，也就是我们现在的情况）开始的RAM中。大内核映像的支持虽然本质上与其他启动模式相同，但是它却把数据放在不同的物理内存地址，以避免ISA黑洞问题。
+4.       跳转到arch/x86/boot/header.S的_start处开始执行。
+
+
+当进入保护模式后,段寄存器就不再保存各个段的基址了,而是存储了段选择子...寻址和分页以后分析
+
+
+
+
+arch/x86/boot/header.s
+L280-L451:从此处开始为setup_header结构,保存启动参数,由boot.h来extern为hdr
+L288:至此为MBR,本来用作于加载内核,但后来被废弃,加载工作由现代bootloader取代.如果直接由MBR引导,会显示"Press any key to restart"
+L297,L298:组成一个short jump指令,这个地方为现代bootloader加载内核后执行的入口(内核镜像的第二个扇区开始执行),这里会jump到.entrytext的start_of_setup(L456)段开始setup工作.
+setup现在仅进行设置堆栈和清空bss随后就跳入C语言了.
+L509:跳入C语言面函数
+
+arch/x86/boot/main.c
+L138:拷贝boot函数,参见header.s中的hdr段
+...:其他忽略主要是一些初始化工作,修正堆,初始化键盘和显示器.
+L184:go_to_protected_mode()准备跳入保护模式 pm.c
+
+arch/x86/boot/pm.c
+L104:go_to_protected_mode()
+	realmode_switch_hook()根据启动参数来决定是否关中断,关闭可屏蔽和不可屏蔽中断.(肯定要关的,除非bootloader的问题)
+	mask_all_interrupts()关闭PIC上的中断.
+	setup_idt() 						//设置了一个空的idt
+	setup_gdt()						//设置了一个简单的
+								  仅供boot使用的gdt
+	protected_mode_jump(boot_params.hdr.code32_start,	//0x100000
+			    (u32)&boot_params + (ds() << 4));	//为加上ds后的真实地址(实模式下由段:偏移,表示20位的内存地址)
+	protected_mode_jump函数原型为protected_mode_jump(u32 entrypoint,u32 bootparams)  //arch/x86/boot/pmjump.S 为寄存器传参,编译设置在boot/Makefile中
+								eax          edx
+arch/x86/boot/pmjump.S
+L36-L47:
+	1.	movw	$__BOOT_DS, %cx		//数据段选择子
+		movw	$__BOOT_TSS, %di	//TTS段选择子
+
+		movl	%cr0, %edx
+		orb	$X86_CR0_PE, %dl	# Protected mode 
+		movl	%edx, %cr0		//进入保护模式后需要一个长跳转
+		
+		# Transition to 32-bit mode
+		.byte	0x66, 0xea		# ljmpl opcode	--| ljmpl字节码
+	2:	.long	in_pm32			# offset  ---与上条组合成ljmpl in_pm32	  这时候cs已经为__BOOT_CS.这样可以跳到in_pm32
+		.word	__BOOT_CS		# segment 代码段选择子!!!!!!!!!!!其实在这里就隐式的设置了代码段
+		ENDPROC(protected_mode_jump)
+
+L49-L77:
+	.code32
+	.section ".text32","ax"
+GLOBAL(in_pm32)
+	# Set up data segments for flat 32-bit mode
+	movl	%ecx, %ds	      //把ds、es、fs、gs、ss设置成同样的值，即__BOOT_DS，
+	movl	%ecx, %es	      //其值为0x88。为什么是0x88呢？注意，我们分析代码的目的是学习，
+	movl	%ecx, %fs	      //是研究，不是其他的，所以来研究一下。我们知道，进入保护模式后
+	movl	%ecx, %gs	      //段寄存器的值就不再是存放段基址了，而是存放段选择子。经过这样的
+	movl	%ecx, %ss	      //一系列指令后，ds、es、fs、gs、ss这五个寄存器的内容都是指向全局描述符表boot_gdt的数据段了。
+	# The 32-bit code sets up its own stack, but this way we do have
+	# a valid stack if some debugging hack wants to use it.
+	addl	%ebx, %esp	      //初始化栈,将原先实模式启动代码重新利用为栈(注释表示这个是仅供娱乐)
+
+	# Set up TR to make Intel VT happy
+	ltr	%di		      //初始化__BOOT_TSS
+
+	# Clear registers to allow for future extensions to the
+	# 32-bit boot protocol
+	xorl	%ecx, %ecx
+	xorl	%edx, %edx
+	xorl	%ebx, %ebx
+	xorl	%ebp, %ebp
+	xorl	%edi, %edi
+
+	# Set up LDTR to make Intel VT happy
+	lldt	%cx
+
+	jmpl	*%eax			# 跳到0x100000 (由于段的基地址为0（可以参考go_to_protected_mode()中的setup_gdt()函数），所以线性地址等于有效地址，因为目前还没有分页，所以线性地址也其实就是物理地址，物理地址1M后正是保护模式代码所在地）)
+ENDPROC(in_pm32)
+
+
+
+
+
+
+
+这边的jmpl应该是跳入到vmlinux.bin中的startup_32函数,但是在整个代码树中有两个startup_32函数,一个是./arch/x86/kernel/head_32.S中的,一个是./arch/x86/boot/compressed/head_32.S中的,但是前者被链接如了顶层目录生成的vmlinux并被objcopy为./arch/x86/boot/compressed/vmlinux.bin并压缩为vmlinux.bin.gz然后compressed/下的head_32.S等才被编译并和vmlinux.bin.gz链接为vmlinux(./arch/x86/boot/compressed)并被objcopy成vmlinux.bin(./arch/x86/boot)然后才被tool/build下的工具与setup.bin组装成bzImage.
+所以这里跳入的startup_32函数是./arch/x86/boot/compressed/head_32.S中的
+
+./arch/x86/boot/compressed/head_32.S(用于解压kernel)
+L33:		__HEAD
+L34:	ENTRY(startup_32)
+...
+L99-L114 设置各个段寄存器
+L124-L177 为解压内核做准备:
+		1.确定拷贝剩余的内核代码到BP_kernel_alignment的32位首地址(0x1000000)
+		  并将其赋予ebx
+		2.设置栈  leal	boot_stack_end(%ebx), %esp
+		3.调整edi和esi准备拷贝内核:
+L163-L170:
+	pushl	%esi			//保存bootparam地址
+	leal	(_bss-4)(%ebp), %esi	//设置从bbs段开始拷贝
+	leal	(_bss-4)(%ebx), %edi	//
+	movl	$(_bss - startup_32), %ecx //拷贝字节数
+	shrl	$2, %ecx
+	std
+	rep	movsl
+	cld
+L176-L177:
+	leal	relocated(%ebx), %eax
+	jmp	*%eax			//跳转到拷贝后的内核执行relocated
+L181-L191:
+	relocated:
+	xorl	%eax, %eax		//由于刚刚没有拷贝bbs段,这里需要新建bbs段
+	leal	_bss(%ebx), %edi
+	leal	_ebss(%ebx), %ecx
+	subl	%edi, %ecx
+	shrl	$2, %ecx
+	rep	stosl
+
+L206-L227:   	传参以执行decompress_kernel,返回解压后的入口地址到eax,jmp到eax
+	/*
+ * Do the decompression, and jump to the new kernel..
+ */
+				/* push arguments for decompress_kernel: */
+	pushl	$z_run_size	/* size of kernel with .bss and .brk */
+	pushl	$z_output_len	/* decompressed length, end of relocs */
+	leal	z_extract_offset_negative(%ebx), %ebp
+	pushl	%ebp		/* output address */	解压目的地
+	pushl	$z_input_len	/* input_len */
+	leal	input_data(%ebx), %eax			解压源地址
+	pushl	%eax		/* input_data */
+	leal	boot_heap(%ebx), %eax
+	pushl	%eax		/* heap area */
+	pushl	%esi		/* real mode pointer */
+	call	decompress_kernel /* returns kernel location in %eax */
+	addl	$28, %esp
+
+/*
+ * Jump to the decompressed kernel.
+ */
+	xorl	%ebx, %ebx
+	jmp	*%eax		//这里的eax就是第二个startup_32()的地址(解压后)
+
+
+
+/arch/x86/kernel/head_32.S	//解压后jmp到这里的startup_32()
+此函数主要是为第一个Linux进程(0号进程)建立执行环境,主要工作如下:
+1.	把段寄存器初始化为最终值。
+2.	把内核的bss段填充为0。
+3.	初始化包含在initial_page_table的临时内核页表，并初始化pg0，以使线性地址一致地映射同一物理地址。
+4.	把页全局目录的地址存放在cr3寄存器中，并通过设置cr0寄存器的PG位启用分页。
+5.	把从BIOS中获得的系统参数和传递给操作系统的参数boot_params放入第一个页框中。
+6.	为进程0建立内核态堆栈。
+7.	该函数再一次清零eflags寄存器的所有位。
+8.	调用setup_idt用空的中断处理程序填充中断描述符表IDT。
+9.	识别处理器的型号。
+10.	用编译好的GDT和IDT表的地址来填充gdtr和idtr寄存器。
+11.	初始化虚拟机监视器Xen。
+12.	向start_kernel()函数进发。
+
+链接时定义了phys_startup_32作为程序的入口点,而在链接脚本中,phys_startup_32是罗辑地址startup_32的物理地址.从进了保护模式开始,程序就用罗辑地址寻址了,不过在启用分页之前,罗辑地址向物理地址的转换很简单,仅仅是va和pa操作,即物理转为罗辑,罗辑转为物理.
+
+#define pa(X) ((X)-__PAGE_OFFSET)
+#define va(X) ((X)+__PAGE_OFFSET)
+__PAGE_OFFSET=0xC0000000（3G,3G-4G为内核空间,32bit(罗辑地址寻址)）
+
+L88-L107:
+	ENTRY(startup_32)
+	movl pa(stack_start),%ecx		//栈开始的物理地址
+	
+	/* test KEEP_SEGMENTS flag to see if the bootloader is asking
+		us to not reload segments */
+	testb $(1<<6), BP_loadflags(%esi)	//看是否需要设置保护模式环境
+	jnz 2f
+
+/*
+ * Set segments to known values.
+ */
+	lgdt pa(boot_gdt_descr)			//设置gdtr
+	movl $(__BOOT_DS),%eax			//设置各个段选择子
+	movl %eax,%ds
+	movl %eax,%es
+	movl %eax,%fs
+	movl %eax,%gs
+	movl %eax,%ss
+2:
+	leal -__PAGE_OFFSET(%ecx),%esp		//设置栈顶
+
+GDTR是一个长度为48bit的寄存器，内容为一个32位的基地址和一个16位的段限。其中32位的基址是指GDT在内存中的地址。lgdt后,加载boot_gdt_descr地址的内容,gdtr段限为__BOOT_DS+7,32位基址变为boot_gdt物理地址.
+
+L737:boot_gdt_descr:
+L738:	.word __BOOT_DS+7			//_BOOT_DS初始化时数据段选择子+7,=0x8f
+L739:	.long boot_gdt - __PAGE_OFFSET		//boot_gdt物理地址
+
+
+L757:ENTRY(boot_gdt)
+L758:	.fill GDT_ENTRY_BOOT_CS,8,0		//GDT_ENTRY_BOOT_CS=2
+L759:	.quad 0x00cf9a000000ffff		/* kernel 4GB code at 0x00000000 */
+L760:	.quad 0x00cf92000000ffff		/* kernel 4GB data at 0x00000000 */
+
+.fill后申请了2个8字节内容为0的空间.L759表示4GB内核代码段描述符内容,起始地址为0x00000000,L760为4GB内核数据段描述符内容,起始地址为0x00000000.处于初始化阶段,不存在用户数据段和代码段.
+
+注意，在进入保护模式后，Linux进行了第二次段寻址的设置，也就是第二次启动保护模式，这一次设置的原因是在之前的处理过程中，指令地址是从物理地址0x100000开始的，而此时整个vmlinux的编译链接地址是从虚拟地址0xC0000000开始的，所以需要在这里重新设置boot_gdt的位置。
+
+随后就是设置几个段寄存器地址
+
+
+L112-L118:
+清理BBS段.
+
+L120-L138:
+/*
+ * Copy bootup parameters out of the way.
+ * Note: %esi still has the pointer to the real-mode data.
+ * With the kexec as boot loader, parameter segment might be loaded beyond
+ * kernel image and might not even be addressable by early boot page tables.
+ * (kexec on panic case). Hence copy out the parameters before initializing
+ * page tables.
+ */
+	movl $pa(boot_params),%edi
+	movl $(PARAM_SIZE/4),%ecx
+	cld
+	rep
+	movsl
+	movl pa(boot_params) + NEW_CL_POINTER,%esi
+	andl %esi,%esi
+	jz 1f			# No command line
+	movl $pa(boot_command_line),%edi
+	movl $(COMMAND_LINE_SIZE/4),%ecx
+	rep
+	movsl
+
+这段代码主要是将实模式下esi指向的boot_params复制一份到现在的boot_params,原因是现在已经是保护模式,段寄存器中的内容已经变了,而且vmlinux的链接地址已经从虚拟地址0xC0000000开始了,马上还要进行内存分页,这个时候再不备份以后就再也找不到这个boot_params了.
+另外一个工作是拷贝启动参数NEW_CL_POINTER到boot_command_line.
+
+
+这里不考虑PAE的情况,直接进行到208行.
+L208-L216:
+	page_pde_offset = (__PAGE_OFFSET >> 20);	//设置为0xc0000000>>20=0xc00
+
+	movl $pa(__brk_base), %edi		//见说明
+	movl $pa(initial_page_table), %edx	//见说明!重要
+	movl $PTE_IDENT_ATTR, %eax		//将0x003给eax
+10:
+	leal PDE_IDENT_ATTR(%edi),%ecx		/* Create PDE entry */
+	movl %ecx,(%edx)			/* Store identity PDE entry */
+	movl %ecx,page_pde_offset(%edx)		/* Store kernel PDE entry */
+
+在链接vmlinux时,__brk_base作为BRK段的开始地址.BRK段是保留给用户通过brk()系统调用向内核申请的内存空间.
+
+传统UNIX系统有两个系统调用brk和sbrk，主要的工作是实现虚拟内存到实际内存的映射。在GNU C程序中，内存分配是这样的：
+每个进程可访问的虚拟内存空间为3G，但在程序编译时，不可能也没必要为程序分配这么大的空间，只分配并不大的数据段空间，程序中动态分配的空间就是从这一块分配的。如果这块空间不够，malloc函数族（realloc，calloc等）就调用brk系统调用将数据段的下界移动，brk函数在内核的管理下将虚拟地址空间映射到内存，供malloc函数使用。
+所以，这个__brk_base对应的空间就是编译链接vmlinux时的数据段下界，这里就是把这个下界的物理地址赋给了edi寄存器。
+
+接下来 movl $pa(initial_page_table), %edx，这一句很重要，操作系统的分页单元就是靠它了。
+L662:ENTRY(initial_page_table)
+L663	.fill 1024,4,0
+可以看到是填充了4*1024也就是一个页面的空字节.物理地址就是$pa(initial_page_table),内核把它作为第一个页表,将其地址赋给edx.
+
+接下来PTE_IDENT_ATTR常量,可见定义arch/x86/include/asm/pgtable_types.h:
+#define PTE_IDENT_ATTR  0x003		/* PRESENT+RW */
+#define PDE_IDENT_ATTR  0x067		/PRESENT+RW+USER+DIRTY+ACCESSED */
+#define PGD_IDENT_ATTR 0x001		/* PRESENT (no other attributes) */
+__brk_base物理地址+0x067的值给ecx,并将该值存到initial_page_table的第一个4字节单元.这么做的原因是分页时内存是以4k对齐的,而__brk_base的物理地址是32位的,那它的低12位必须是0,不然页面就无法对齐,所以其低12位就是无用的,在作为全局目录中的项时,将低12位作为各种属性位.那么__brk_base物理地址+0x67就是置PRESENT、RW、USER、DIRTY和ACCESSED位.
+
+接着还将__brk_base物理地址+0x67的值存到initial_page_table偏移0xc00中,此表中一项为4个字节,所以也就是还将此值作为第0xc00/4=768全局目录项.
+
+结论:页全局目录为initial_page_table开始的4096个内存单元，正好占用1个页面，包含1024个表项，但是同时从第1个和第768个表项开始分配，而且这些个表项的PRESENT、RW、USER、DIRTY和ACCESSED被置位。没有用到表项都为空。
+
+
+L217-L222:
+	addl $4,%edx			//edx指向全局目录第二项
+	movl $1024, %ecx		//循环1024次
+11:
+	stosl				//拷贝eax=0x03的值到es:edi中(__brk_base)
+	addl $0x1000,%eax		//eax累加0x1000
+	loop 11b			//循环1024次
+循环结束,initial_page_table全局目录第一项指向的__brk_base中就有共1024个表项的第一个页表.第一个表项为0x03,第二个为0x1003...第1024个为0x3ff003.
+
+
+L223-L236:
+		/*
+	 * End condition: we must map up to the end + MAPPING_BEYOND_END.
+	 */
+	movl $pa(_end) + MAPPING_BEYOND_END + PTE_IDENT_ATTR, %ebp
+	cmpl %ebp,%eax
+	jb 10b
+	addl $__PAGE_OFFSET, %edi
+	movl %edi, pa(_brk_end)
+	shrl $12, %eax
+	movl %eax, pa(max_pfn_mapped)		//这里第一次设置这个值,记录已经映射到的最大页框号
+
+	/* Do early initialization of the fixmap area */
+	movl $pa(initial_pg_fixmap)+PDE_IDENT_ATTR,%eax
+	movl %eax,pa(initial_page_table+0xffc)
+
+我们的表映射关系是以end+MAPPING_BEYOND_END结束,所以还有些尾巴需要处理.这里需要将$pa(_end) + MAPPING_BEYOND_END + PTE_IDENT_ATTR,也就是需要映射的最大物理地址和已经映射的物理地址eax的值进行比对,如果大于,则就要跳到上面再申请若干个全局目录的表项和若干个作为页表的页面.最后还要申请空间处理fixmap区域(在第0xffc个全局目录表项).
+
+	最后的页情况:
+		+------------------------+
+		|			 |
+		|			 |
+		|			 |
+	--------+------------------------+------_brk_base     <----------------+
+第0个	|	|	4bytes:0x003	 |				       |
+页表	|	+------------------------+				       |
+1024个 <	|	4bytes:0x1003	 |				       |
+表项	|	+------------------------+				       |
+	|	|	4bytes:0x2003	 |		                       | 
+	|	+------------------------+                                     |
+	|	|	.......		 |                                     |
+	|	+------------------------+				       |
+	|	|	4bytes:0x3FF003	 | <----es:edi                         |
+	--------+------------------------+                                     |
+		|	可能还有更多的	 |                                     |
+		|      页表,取决于_end	 |                                     |
+		|	的地址		 |                                     |
+		|			 |                                     |
+		|	....		 |                                     |
+		+------------------------+ <-----initial_page_table全局目录表 |
+0号表项	|_brk_base的物理地址	 |-------------------------------------+
+		+------------------------+			|
+		|_brk_base+4096		 |			|
+		+------------------------+			|
+		|_brk_base+8192		 |			|
+		+------------------------+			|
+		|............		 |			|
+		+------------------------+ 从0号和767号同时分配+
+767号表项	|_brk_base的物理地址	 | 
+		+------------------------+
+		|_brk_base+4096		 |  注意:启动分页机制后,线性地址(罗辑地址)
+		+------------------------+  和物理地址的转换就不用pa了,比如线性地址
+		|_brk_base+8192		 |  0x0就是第0个页表的第0个表项对应的物理地址
+		+------------------------+
+		|			 |
+		|			 |
+		|			 |
+		|			 |
+		--------------------------
+如上所示,从_brk_base开始的内存存放若干个页表,每个页表占据一个页面.页表项内容从0x003开始到$pa(_end) + MAPPING_BEYOND_END + PTE_IDENT_ATTR结束,取决于_end的物理地址.在以上这些工作完成后,就完成了从物理地址到链接vmlinux后的结束地址_end所有代码的映射,包括__brk_base到__brk_limit这段BRK段的本身这段代码.
+
+
+略过SMP和MMU相关初始化代码,来到启动分页.
+L388-L406:
+	 * Enable paging
+ */
+	movl $pa(initial_page_table), %eax
+	movl %eax,%cr3		/* set the page table pointer.. */
+	movl $CR0_STATE,%eax
+	movl %eax,%cr0		/* ..and set paging (PG) bit */
+	ljmp $__BOOT_CS,$1f	/* Clear prefetch and normalize %eip */
+1:
+	/* Shift the stack pointer to a virtual address */
+	addl $__PAGE_OFFSET, %esp
+
+/*
+ * start system 32-bit setup. We need to re-do some of the things done
+ * in 16-bit mode for the "real" operations.
+ */
+	movl setup_once_ref,%eax
+	andl %eax,%eax
+	jz 1f				# Did we do this already?
+	call *%eax
+将全局目录的32位物理地址给cr3寄存器,然后启动cr0的分页装置($CR0_STATE).在此之后分页机制完全启动,32位内核启用的是三级机制,即1页全局目录,若干个页表和页面.接着修正eip和esp适应分页机制,为0号进程建立栈.(0号进程就是最后的idle进程)注意此前esp为stack_start中的内容.
+stack_start定义:
+L701:
+	ENTRY(stack_start)
+	.long init_thread_union+THREAD_SIZE
+
+可见内核态堆栈由init_thread_union表示,在include/linux/sched.h被定义成一个全局变量:
+extern union thread_union init_thread_union;
+union thread_union {
+	struct thread_info thread_info;
+	unsigned long stack[THREAD_SIZE/sizeof(long)];
+};
+
+#define THREAD_SIZE       (PAGE_SIZE << THREAD_ORDER)
+由于PAGE_SIZE是4096,HREAD_ORDER在x86体系中是1,所以THREAD_SIZE大小为8k,也就是说这个thread_union大小也为8k.那么栈就从init_thread_union+8k的地方开始了.
+对于进程的PCB来说,有两个东西最重要,一个是thread_info,还有一个就是task_struct.这个0号进程的thread_info已经可以看到了,在thread_union中,那么task_struct呢?
+
+其实task_strcut在编译时就以宏命令的方式初始化了,并且放在.data.init_task段中.定义在init/init_task.c中:
+
+union thread_union init_thread_union __init_task_data =
+	{ INIT_THREAD_INFO(init_task) };
+这边的__init_task_data是一个宏,不是什么变量,定义在include/linux/init_task.h中:
+#define __init_task_data __attribute__((__section__(".data..init_task")))
+两句展开就成了:
+union thread_union init_thread_union __attribute__((__section__(".data..init_task")))={ INIT_THREAD_INFO(init_task) };
+这是一条赋值语句,对联合体init_thread_union初始化.!!!这里是对联合体赋值并把数据放在指定的数据段中(高级技能)!!!
+看init_task定义在init/init_task.c中:
+struct task_struct init_task = INIT_TASK(init_task);
+这里0号进程的task_struct就出现了,就是init_task.在对init_thread_union赋值的时候,同时也通过调用INIT_TASK宏对init_task赋值.
+
+宏INIT_TASK:
+#define INIT_TASK(tsk)	\
+{									\
+	.state		= 0,						\
+	.stack		= &init_thread_info,				\
+	.usage		= ATOMIC_INIT(2),				\
+	.flags		= PF_KTHREAD,					\
+	.prio		= MAX_PRIO-20,					\
+	.static_prio	= MAX_PRIO-20,					\
+	.normal_prio	= MAX_PRIO-20,					\
+	.policy		= SCHED_NORMAL,					\
+	.cpus_allowed	= CPU_MASK_ALL,					\
+	.nr_cpus_allowed= NR_CPUS,					\
+	.mm		= NULL,						\
+	.active_mm	= &init_mm,					\
+	.se		= {						\
+		.group_node 	= LIST_HEAD_INIT(tsk.se.group_node),	\
+	},								\
+	.rt		= {						\
+		.run_list	= LIST_HEAD_INIT(tsk.rt.run_list),	\
+		.time_slice	= RR_TIMESLICE,				\
+	},								\
+	.tasks		= LIST_HEAD_INIT(tsk.tasks),			\
+	INIT_PUSHABLE_TASKS(tsk)					\
+	INIT_CGROUP_SCHED(tsk)						\
+	.ptraced	= LIST_HEAD_INIT(tsk.ptraced),			\
+	.ptrace_entry	= LIST_HEAD_INIT(tsk.ptrace_entry),		\
+	.real_parent	= &tsk,						\
+	.parent		= &tsk,						\
+	.children	= LIST_HEAD_INIT(tsk.children),			\
+	.sibling	= LIST_HEAD_INIT(tsk.sibling),			\
+	.group_leader	= &tsk,						\
+	RCU_POINTER_INITIALIZER(real_cred, &init_cred),			\
+	RCU_POINTER_INITIALIZER(cred, &init_cred),			\
+	.comm		= INIT_TASK_COMM,				\
+	.thread		= INIT_THREAD,					\
+	.fs		= &init_fs,					\
+	.files		= &init_files,					\
+	.signal		= &init_signals,				\
+	.sighand	= &init_sighand,				\
+	.nsproxy	= &init_nsproxy,				\
+	.pending	= {						\
+		.list = LIST_HEAD_INIT(tsk.pending.list),		\
+		.signal = {{0}}},					\
+	.blocked	= {{0}},					\
+	.alloc_lock	= __SPIN_LOCK_UNLOCKED(tsk.alloc_lock),		\
+	.journal_info	= NULL,						\
+	.cpu_timers	= INIT_CPU_TIMERS(tsk.cpu_timers),		\
+	.pi_lock	= __RAW_SPIN_LOCK_UNLOCKED(tsk.pi_lock),	\
+	.timer_slack_ns = 50000, /* 50 usec default slack */		\
+	.pids = {							\
+		[PIDTYPE_PID]  = INIT_PID_LINK(PIDTYPE_PID),		\
+		[PIDTYPE_PGID] = INIT_PID_LINK(PIDTYPE_PGID),		\
+		[PIDTYPE_SID]  = INIT_PID_LINK(PIDTYPE_SID),		\
+	},								\
+	.thread_group	= LIST_HEAD_INIT(tsk.thread_group),		\
+	.thread_node	= LIST_HEAD_INIT(init_signals.thread_head),	\
+	INIT_IDS							\
+	INIT_PERF_EVENTS(tsk)						\
+	INIT_TRACE_IRQFLAGS						\
+	INIT_LOCKDEP							\
+	INIT_FTRACE_GRAPH						\
+	INIT_TRACE_RECURSION						\
+	INIT_TASK_RCU_PREEMPT(tsk)					\
+	INIT_TASK_RCU_TASKS(tsk)					\
+	INIT_CPUSET_SEQ(tsk)						\
+	INIT_RT_MUTEXES(tsk)						\
+	INIT_VTIME(tsk)							\
+	INIT_NUMA_BALANCING(tsk)					\
+}
+可见0号进程的stack就是刚才init_thread_info的地址,parent就是自己,thread是INIT_THREAD.thread_struct就有了.现在看thread_info.INIT_THREAD_INFO宏定义在arch/x86/include/asm/thread_info.h中:
+#define INIT_THREAD_INFO(tsk)			\
+{						\
+	.task		= &tsk,			\
+	.exec_domain	= &default_exec_domain,	\
+	.flags		= 0,			\
+	.cpu		= 0,			\
+	.saved_preempt_count = INIT_PREEMPT_COUNT,	\
+	.addr_limit	= KERNEL_DS,		\
+	.restart_block = {			\
+		.fn = do_no_restart_syscall,	\
+	},					\
+}
+这样以后,init_thread_union 就被初始化成以上内容了,至此, 0 号进程的PCB(task_struct
+和 thread_info)就初始化完毕了。!!!还是要注意,这些东西不是在head_32.s中初始化的,而是在编译时作为一个全局数据被初始化的,并且把他们放在.data.init.task数据段中!!!head_32.s仅仅是将esp指向这个init_thread_union 以上 8k 作为栈顶.
+
+
+至此,分段,分页,0号进程的运行环境已经全部建立,接下来就是要调用start_kernel了,但是还需要另外一些工作.
+
+首先是初始化中断描述表idt等等...call 到setup_once_ref:
+L478-L524:
+setup_once:
+	/*
+	 * Set up a idt with 256 entries pointing to ignore_int,
+	 * interrupt gates. It doesn't actually load idt - that needs
+	 * to be done on each CPU. Interrupts are enabled elsewhere,
+	 * when we can be relatively sure everything is ok.
+	 */
+
+L486:	movl $idt_table,%edi
+L487:	movl $early_idt_handlers,%eax
+L488:	movl $NUM_EXCEPTION_VECTORS,%ecx
+1:
+L490:	movl %eax,(%edi)
+L491:	movl %eax,4(%edi)
+	/* interrupt gate, dpl=0, present */
+	movl $(0x8E000000 + __KERNEL_CS),2(%edi)
+	addl $9,%eax
+	addl $8,%edi
+L496:	loop 1b
+
+	movl $256 - NUM_EXCEPTION_VECTORS,%ecx
+L499:	movl $ignore_int,%edx
+L500:	movl $(__KERNEL_CS << 16),%eax
+L501:	movw %dx,%ax		/* selector = 0x0010 = cs */
+	movw $0x8E00,%dx	/* interrupt gate - dpl=0, present */
+2:
+	movl %eax,(%edi)
+	movl %edx,4(%edi)
+	addl $8,%edi
+	loop 2b
+	andl $0,setup_once_ref	/* Once is enough, thanks */
+	ret
+
+看L499,把ignore_int函数的入口给edx,该函数的主要内容是在early_recursion_flag不为2的情况下调用内核打印函数printk打印int_msg.
+L500,是最重要的__KERNEL_CS,这个宏是内核代码段的选择子,定义在arch/x86/include/asm/segment.h中:
+#define GDT_ENTRY_KERNEL_CS 2
+#define __KERNEL_CS	(GDT_ENTRY_KERNEL_CS*8)
+#define __KERNEL_DS	(GDT_ENTRY_KERNEL_DS*8)
+#define __USER_DS	(GDT_ENTRY_DEFAULT_USER_DS*8+3)
+#define __USER_CS	(GDT_ENTRY_DEFAULT_USER_CS*8+3)
+可见__KERNEL_CS的值是0x10,那么L500后,eax的值为0x100000,L501又将ignore_int函数的低16位给ax,那么eax中高16位就是0x0010,低16位就是ignore_int的低16位.
+L486中,edi存放了idt_table表的地址,这个表就是中断门描述符表,定义在在arch/x86/include/asm/desc.h中:
+extern gate_desc idt_table[];
+中断门描述符表是一个数组,每个元素都是一个中断门描述符gate_desc,在arch/x86/include/asm/desc_defs.h中:
+typedef struct gate_struct64 gate_desc;
+从名字上就可以看出每个门描述符占8个字节,64位,在同一个文件中定义:
+struct gate_struct64 {
+	u16 offset_low;
+	u16 segment;
+	unsigned ist : 3, zero0 : 5, type : 5, dpl : 2, p : 1;
+	u16 offset_middle;
+	u32 offset_high;
+	u32 zero1;
+} __attribute__((packed));
+这里的segment是段选择子,idt_table就包括了若干个这样的门描述符的数组表,每个表项8个字节,表头被edi指向.
+随后L490-L501,初始化中断描述符表中的项,将其中的一些处理函数设置为early_idt_handlers和ignore_int.
+
+
+设置完中断描述符表,内核需要如何使用?
+setup_once函数返回,运行到L439行:
+L439:	
+	is486:
+	movl $0x50022,%ecx	# set AM, WP, NE and MP
+	movl %cr0,%eax
+	andl $0x80000011,%eax	# Save PG,PE,ET
+	orl %ecx,%eax
+	movl %eax,%cr0
+
+L446:	lgdt early_gdt_descr
+L447:	lidt idt_descr
+	ljmp $(__KERNEL_CS),$1f
+1:	movl $(__KERNEL_DS),%eax	# reload all the segment registers
+	movl %eax,%ss			# after changing gdt.
+
+	movl $(__USER_DS),%eax		# DS/ES contains default USER segment
+	movl %eax,%ds
+	movl %eax,%es
+
+	movl $(__KERNEL_PERCPU), %eax	//注意下面会用到,每CPU变量段
+	movl %eax,%fs			# set this cpu's percpu
+
+	movl $(__KERNEL_STACK_CANARY),%eax
+	movl %eax,%gs
+
+	xorl %eax,%eax			# Clear LDT
+	lldt %ax
+
+	pushl $0		# fake return address for unwinder
+	jmp *(initial_code)
+看L446,lgdt early_gdt_descr,这里重新加载了全局描述符表地址:
+ENTRY(early_gdt_descr)
+	.word GDT_ENTRIES*8-1
+	.long gdt_page			/* Overwritten for secondary CPUs */
+同样也是包含了段限和全局描述符表地址,gtd_page在arch/x86/include/asm/desc.h中:
+struct gdt_page {
+	struct desc_struct gdt[GDT_ENTRIES];
+} __attribute__((aligned(PAGE_SIZE)));
+为什么需要重新加载一个全局描述符表?是因为现在已经启动分页了,所以需要重新定义全局描述符表的位置,GDT的第三次段设置是在开启并且设置了页面寻址之后进行的.设置本身很简单,也是最终设置,而且还同时设置了IDT.而且由于aligned(PAGE_SIZE),所以gdt_page正好是一个页面的开始位置.GDT_ENTRIES定义值为32;
+
+所以全局描述符表示为每个表项为desc_struct结构的,32个表项的数组,每个表项是:
+struct desc_struct {
+	union {
+		struct {
+			unsigned int a;
+			unsigned int b;
+		};
+		struct {
+			u16 limit0;
+			u16 base0;
+			unsigned base1: 8, type: 4, s: 1, dpl: 2, p: 1;
+			unsigned limit: 4, avl: 1, l: 1, d: 1, g: 1, base2: 8;
+		};
+	};
+} __attribute__((packed));
+看联合体第二项,是描述符的结构,占8个字节,所以gdt表共占8*32=256个字节.也就是仅仅占了1/16个页面.
+
+看L447,通过lidt idt_descr加载中断描述符表,
+idt_descr:
+	.word IDT_ENTRIES*8-1		# idt contains 256 entries
+	.long idt_table
+正好是刚刚已经初始化好的中断描述符表.
+
+随后分别将段选择子__KERNEL_CS、__KERNEL_DS、__USER_DS、__KERNEL_PERCPU
+加载到寄存器 cs、ss、ds/es、fs。注意这里一个细节,加载 cs 寄存器重来都不使用 mov 指
+令,而是通过 ljmp $(__KERNEL_CS),$1f 来设置。还有,这时候,gdt 是早已初始化了的。
+
+问题来了,这个GDT又是在哪里初始化的呢?看arch/x86/kernel/cpu/common.c:
+DEFINE_PER_CPU_PAGE_ALIGNED(struct gdt_page, gdt_page) = { .gdt = {
+#ifdef CONFIG_X86_64
+	/*
+	 * We need valid kernel segments for data and code in long mode too
+	 * IRET will check the segment types  kkeil 2000/10/28
+	 * Also sysret mandates a special GDT layout
+	 *
+	 * TLS descriptors are currently at a different place compared to i386.
+	 * Hopefully nobody expects them at a fixed place (Wine?)
+	 */
+	[GDT_ENTRY_KERNEL32_CS]		= GDT_ENTRY_INIT(0xc09b, 0, 0xfffff),
+	[GDT_ENTRY_KERNEL_CS]		= GDT_ENTRY_INIT(0xa09b, 0, 0xfffff),
+	[GDT_ENTRY_KERNEL_DS]		= GDT_ENTRY_INIT(0xc093, 0, 0xfffff),
+	[GDT_ENTRY_DEFAULT_USER32_CS]	= GDT_ENTRY_INIT(0xc0fb, 0, 0xfffff),
+	[GDT_ENTRY_DEFAULT_USER_DS]	= GDT_ENTRY_INIT(0xc0f3, 0, 0xfffff),
+	[GDT_ENTRY_DEFAULT_USER_CS]	= GDT_ENTRY_INIT(0xa0fb, 0, 0xfffff),
+#else
+	[GDT_ENTRY_KERNEL_CS]		= GDT_ENTRY_INIT(0xc09a, 0, 0xfffff),
+	[GDT_ENTRY_KERNEL_DS]		= GDT_ENTRY_INIT(0xc092, 0, 0xfffff),
+	[GDT_ENTRY_DEFAULT_USER_CS]	= GDT_ENTRY_INIT(0xc0fa, 0, 0xfffff),
+	[GDT_ENTRY_DEFAULT_USER_DS]	= GDT_ENTRY_INIT(0xc0f2, 0, 0xfffff),
+	/*
+	 * Segments used for calling PnP BIOS have byte granularity.
+	 * They code segments and data segments have fixed 64k limits,
+	 * the transfer segment sizes are set at run time.
+	 */
+	/* 32-bit code */
+	[GDT_ENTRY_PNPBIOS_CS32]	= GDT_ENTRY_INIT(0x409a, 0, 0xffff),
+	/* 16-bit code */
+	[GDT_ENTRY_PNPBIOS_CS16]	= GDT_ENTRY_INIT(0x009a, 0, 0xffff),
+	/* 16-bit data */
+	[GDT_ENTRY_PNPBIOS_DS]		= GDT_ENTRY_INIT(0x0092, 0, 0xffff),
+	/* 16-bit data */
+	[GDT_ENTRY_PNPBIOS_TS1]		= GDT_ENTRY_INIT(0x0092, 0, 0),
+	/* 16-bit data */
+	[GDT_ENTRY_PNPBIOS_TS2]		= GDT_ENTRY_INIT(0x0092, 0, 0),
+	/*
+	 * The APM segments have byte granularity and their bases
+	 * are set at run time.  All have 64k limits.
+	 */
+	/* 32-bit code */
+	[GDT_ENTRY_APMBIOS_BASE]	= GDT_ENTRY_INIT(0x409a, 0, 0xffff),
+	/* 16-bit code */
+	[GDT_ENTRY_APMBIOS_BASE+1]	= GDT_ENTRY_INIT(0x009a, 0, 0xffff),
+	/* data */
+	[GDT_ENTRY_APMBIOS_BASE+2]	= GDT_ENTRY_INIT(0x4092, 0, 0xffff),
+
+	[GDT_ENTRY_ESPFIX_SS]		= GDT_ENTRY_INIT(0xc092, 0, 0xfffff),
+	[GDT_ENTRY_PERCPU]		= GDT_ENTRY_INIT(0xc092, 0, 0xfffff),
+	GDT_STACK_CANARY_INIT
+#endif
+} };
+
+DEFINE_PER_CPU_PAGE_ALIGNED定义在include/linux/percpu-defs.h中:
+#define DEFINE_PER_CPU_PAGE_ALIGNED(type, name)				\
+	DEFINE_PER_CPU_SECTION(type, name, "..page_aligned")		\
+	__aligned(PAGE_SIZE)
+
+#define DEFINE_PER_CPU_SECTION(type, name, sec)				\
+	__PCPU_ATTRS(sec) PER_CPU_DEF_ATTRIBUTES			\
+	__typeof__(type) name
+
+#define __PCPU_ATTRS(sec)						\
+	__percpu __attribute__((section(PER_CPU_BASE_SECTION sec)))	\
+	PER_CPU_ATTRIBUTES
+
+那么展开就是:
+	extern __percpu __attribute__((section(PER_CPU_BASE_SECTION .page_aligned))) \
+PER_CPU_ATTRIBUTES __typeof__(struct gdt_page) gdt_page __aligned(PAGE_SIZE)
+
+所以gdt[GDT_ENTRIES]就被编译成一个常量,链接进PER_CPU_BASE_SECTION中,另外GDT_ENTRY_INIT在arch/x86/include/asm/desc_defs.h中定义:
+#define GDT_ENTRY_INIT(flags, base, limit) { { { \
+		.a = ((limit) & 0xffff) | (((base) & 0xffff) << 16), \
+		.b = (((base) & 0xff0000) >> 16) | (((flags) & 0xf0ff) << 8) | \
+			((limit) & 0xf0000) | ((base) & 0xff000000), \
+	} } }
+所以经过编译链接之后,gdt就包含14个全局描述符号,其中:
+#define GDT_ENTRY_KERNEL_BASE 12
+#define GDT_ENTRY_KERNEL_CS
+(GDT_ENTRY_KERNEL_BASE + 0)
+表示内核代码段的索引,即 gdt[12]为代码段描述符。
+#define GDT_ENTRY_KERNEL_DS
+(GDT_ENTRY_KERNEL_BASE + 1)
+表示内核数据段的索引,即 gdt[13]为数据段描述符。
+#define GDT_ENTRY_DEFAULT_USER_CS 14
+表示用户代码段的索引,即 gdt[14]为用户代码段描述符。
+#define GDT_ENTRY_DEFAULT_USER_CS 14
+表示用户数据段的索引,即 gdt[15]为用户数据段描述符。
+#define GDT_ENTRY_PNPBIOS_BASE
+(GDT_ENTRY_KERNEL_BASE + 6)
+#define GDT_ENTRY_PNPBIOS_CS32
+(GDT_ENTRY_PNPBIOS_BASE + 0)
+#define GDT_ENTRY_PNPBIOS_CS16
+(GDT_ENTRY_PNPBIOS_BASE + 1)
+#define GDT_ENTRY_PNPBIOS_DS
+(GDT_ENTRY_PNPBIOS_BASE + 2)
+#define GDT_ENTRY_PNPBIOS_TS1
+(GDT_ENTRY_PNPBIOS_BASE + 3)
+#define GDT_ENTRY_PNPBIOS_TS2
+(GDT_ENTRY_PNPBIOS_BASE + 4)
+gdt[18]、gdt[19]、gdt[20]、gdt[21]、gdt[22]分别表示 PNP BIOS 的 32 位代码段、16 位代码
+段、数据段、两个任务段。
+#define GDT_ENTRY_APMBIOS_BASE
+(GDT_ENTRY_KERNEL_BASE + 11)
+gdt[23]、gdt[24]、gdt[25]分别表示高级电源管理 APM 的 32 位代码段、16 位代码段和数据
+段。
+#define GDT_ENTRY_ESPFIX_SS
+(GDT_ENTRY_KERNEL_BASE + 14)
+gdt[26]表示堆栈修复段的段描述符。
+#define GDT_ENTRY_PERCPU
+(GDT_ENTRY_KERNEL_BASE + 15)
+gdt[26]表示每 CPU 段的段描述符。
+
+Linux 启动以来自此加载的 gdt 已有以上若干个段的描述符在编译 vmlinux 的时候初始化了,其他没被初始化的地方暂时保留。
+
+Linux x86 的分段管理是通过 GDTR 来实现的,那么现在就来总结一下 Linux 启动以来到现在,共设置了几次 GDTR:
+1. 第一次还是 cpu 处于实模式的时候,运行 arch\x86\boot\pm.c 下 setup_gdt()函数的代码。该函数,设置了两个 GDT 项,一个是代码段可读/执行的,另一个是数据段可读写的,都是从 0-4G 直接映射到 0-4G,也就是虚拟地址和线性地址相等。
+2. 第二次是在内核解压缩以后,用解压缩后的内核代码 arch\x86\kernel\head_32.S 再次对gdt 进行设置,这一次的设置效果和上一次是一样的。
+3. 第三次同样是在 arch\x86\kernel\head_32.S 中,只不过是在开启了页面寻址之后,通过分页寻址得到编译好的全局描述符表 gdt 的地址。这一次效果就跟前两次不一样了,为内核最终使用的全局描述符表,同时也设置了 IDT。
+
+
+
+在这个之后jmp *(initial_code):
+ENTRY(initial_code)
+	.long i386_start_kernel
+就跳入到arch/x86/kernel/head32.s中的i386_start_kernel函数.函数很简单,最终跳入start_kernel()函数.
+
+
+
+
+
+init/main.c:
+这个时候终于跑出arch了,以后除了一些例外,其余代码都在arch外了.
+首先是执行了lockdep_init();(kernel/locking/lockdep.c)
+void lockdep_init(void)
+{
+	int i;
+
+	/*
+	 * Some architectures have their own start_kernel()
+	 * code which calls lockdep_init(), while we also
+	 * call lockdep_init() from the start_kernel() itself,
+	 * and we want to initialize the hashes only once:
+	 */
+	if (lockdep_initialized)
+		return;
+
+	for (i = 0; i < CLASSHASH_SIZE; i++)
+		INIT_LIST_HEAD(classhash_table + i);
+
+	for (i = 0; i < CHAINHASH_SIZE; i++)
+		INIT_LIST_HEAD(chainhash_table + i);
+
+	lockdep_initialized = 1;
+}
+函数用于启动 Lock dependency validator(锁依赖验证程序...?),本质上是建立两个散列表classhash_table,chainhash_table.并初始化全局变量lockdep_initialized.
+
+static struct list_head classhash_table[CLASSHASH_SIZE];
+static struct list_head chainhash_table[CHAINHASH_SIZE];
+(这里见链表知识...)
+
+接下来调用set_task_stack_end_magic(&init_task);(定义在kernel/fork.c)
+ void set_task_stack_end_magic(struct task_struct *tsk)                              
+ 298 {
+ 299     unsigned long *stackend;
+ 300  
+ 301     stackend = end_of_stack(tsk);
+ 302     *stackend = STACK_END_MAGIC;    /* for overflow detection */
+ 303 }
+可见主要是在PCB末尾添加一个魔数.
+
+接下来调用smp_setup_processor_id();空函数
+接下来boot_init_stack_canary();空函数
+接下来local_irq_disable();(include/linux/irqflags.h)
+137 #define local_irq_disable() do { raw_local_irq_disable(); } while (0) 最终是屏蔽可屏蔽中断.
+59 #define raw_local_irq_disable()     arch_local_irq_disable() 
+
+(arch/x86/include/asm/irqflags.h)
+70 static inline notrace void arch_local_irq_restore(unsigned long flags)
+71 {  
+72     native_restore_fl(flags);
+73 }  
+
+37 static inline void native_irq_disable(void)    
+38 {     
+39     asm volatile("cli": : :"memory");	//cli取消eflags的IF位,屏蔽可屏蔽中断.
+40 }  
+
+
+接下来boot_cpu_init();激活第一个CPU
+ 465 static void __init boot_cpu_init(void)                                   
+ 466 {                                                                        
+ 467     int cpu = smp_processor_id();       //SMP（Symmetric Multi-Processing） 对称多处理结构的简称                            
+ 468     /* Mark the boot cpu "present", "online" etc for SMP and UP case */  
+ 469     set_cpu_online(cpu, true);                                          
+ 470     set_cpu_active(cpu, true);                                           
+ 471     set_cpu_present(cpu, true);                                          
+ 472     set_cpu_possible(cpu, true);                                          
+ 473 }  
+smp_processor_id()等价于调用宏raw_smp_processor_id,其意义在于 SMP 的情况下,获得当前 CPU 的 ID.如果不是 SMP,那么就返回 0。那么在 CONFIG_X86_32_SMP 的情况下:
+#define raw_smp_processor_id() (this_cpu_read(cpu_number))  
+
+这里的cpu_number来自arch/x86/kernel/setup_percpu.c:
+24 DEFINE_PER_CPU_READ_MOSTLY(int, cpu_number);
+25 EXPORT_PER_CPU_SYMBOL(cpu_number); 
+这个东西不想c语言全局变量,而是通过两个宏来定义的,要读懂必须对每CPU变量概念了解:
+最简单也是最重要的同步技术包括把内核变量或数据结构声明为每CPU变量（per-cpu variable）。每CPU变量主要是数据结构的数组，系统的每个CPU对应数组的一个元素。
+!!!!每CPU变量注意!!!!
+一个CPU不应该访问与其他CPU对应的数组元素，另外，它可以随意读或修改它自己的元素而不用担心出现竞争条件，因为它是唯一有资格这么做的CPU。但是，这也意味着每CPU变量基本上只能在特殊情况下使用，也就是当它确定在系统的CPU上的数据在逻辑上是独立的时候。
+
+每CPU的数组元素在主存中被排列以使每个数据结构存放在硬件高速缓存的不同行，因此，对每CPU数组的并发访问不会导致高速缓存行的窃用和失效（这种操作会带来昂贵的系统开销）。
+
+虽然每CPU变量为来自不同CPU的并发访问提供保护，但对来自异步函数（中断处理程序和可延迟函数）的访问不提供保护，在这种情况下需要另外的同步技术。
+
+172 #define DEFINE_PER_CPU_READ_MOSTLY(type, name)  DEFINE_PER_CPU_SECTION(type, name, "..read_mostly")
+
+103 #define DEFINE_PER_CPU_SECTION(type, name, sec)             \
+104     __PCPU_ATTRS(sec) PER_CPU_DEF_ATTRIBUTES            \
+105     __typeof__(type) name
+
+48 #define __PCPU_ATTRS(sec)                       \
+49 __percpu __attribute__((section(PER_CPU_BASE_SECTION sec))) \ 
+50     PER_CPU_ATTRIBUTES
+
+__percpu 是空的
+PER_CPU_ATTRIBUTES也是空的
+DEFINE_PER_CPU_READ_MOSTLY(int, cpu_number);展开就是:
+__attribute__((section(PER_CPU_BASE_SECTION "..read_mostly")))
+__typeof__(int) cpu_number
+
+#ifdef CONFIG_SMP
+#define PER_CPU_BASE_SECTION ".data.percpu"
+#else#define PER_CPU_BASE_SECTION ".data";
+#endif
+
+最后DEFINE_PER_CPU_READ_MOSTLY(int, cpu_number);实际上是申明一个int类型的cpu_number指针,编译的时候把它指向.data.percpu段的开始
+
+181 #define EXPORT_PER_CPU_SYMBOL(var) EXPORT_SYMBOL(var)                       
+182 #define EXPORT_PER_CPU_SYMBOL_GPL(var) EXPORT_SYMBOL_GPL(var)
+
+EXPORT_SYMBOL 是什么东西啊?还记得我们在编译内核时有个 kallsyms 目标么?这里就用到了。所以内核的编译过程很重要,请大家务必掌握! 这个对象对应于“/proc/kallsyms”文件,该文件对应着内核符号表,记录了符号以及符号所在的内存地址。
+模块可以使用如下宏导出符号到内核符号表:
+EXPORT_SYMBOL(符号名);
+EXPORT_SYMBOL_GPL(符号名)
+
+导出的符号可以被其他模块使用,不过使用之前一定要声明一下。EXPORT_SYMBOL_GPL()只适用于包含 GPL 许可权的模块。所以,EXPORT_SYMBOL(cpu_number)就是把 cpu_number变量声明出去。
+
+
+这里讲下this_cpu_read()宏定义在include/linux/percpu_defs.h
+496 #define this_cpu_read(pcp)      __pcpu_size_call_return(this_cpu_read_, pcp) 
+
+
+303 #define __pcpu_size_call_return(stem, variable)             \                                                                                              
+304 ({                                  \
+305     typeof(variable) pscr_ret__;                    \
+306     __verify_pcpu_ptr(&(variable));                 \
+307     switch(sizeof(variable)) {                  \
+308     case 1: pscr_ret__ = stem##1(variable); break;          \
+309     case 2: pscr_ret__ = stem##2(variable); break;          \
+310     case 4: pscr_ret__ = stem##4(variable); break;          \
+311     case 8: pscr_ret__ = stem##8(variable); break;          \
+312     default:                            \
+313         __bad_size_call_parameter(); break;         \
+314     }                               \
+315     pscr_ret__;                         \
+316 })
+在 C 语言的宏中,#的功能是将其后面的宏参数进行字符串化操作(Stringfication),简单说就是在对它所引用的宏变量通过替换后在其左右各加上一个双引号。比如__percpu_arg 宏:
+#define __percpu_arg(x)
+"%%"__stringify(__percpu_seg)":%P" #x
+而 x,我们传入的是 1;__percpu_seg,我们传入的是 fs,所以__percpu_arg 展开:
+%%"__stringify(fs)":%P" "1"
+
+而##被称为连接符(concatenator),用来将两个 Token 连接为一个 Token。注意这里连接的对象是 Token 就行,而不一定是宏的变量。比如:
+#define LINK_MULTIPLE(a,b,c,d) a##_##b##_##c##_##d
+typedef struct record_type LINK_MULTIPLE(name,company,position,salary);
+这里这个语句将展开为:
+typedef struct record_type name_company_position_salary;
+
+204 #define __verify_pcpu_ptr(ptr)                      \//函数作用???
+205 do {                                    \
+206     const void __percpu *__vpp_verify = (typeof((ptr) + 0))NULL;    \
+207     (void)__vpp_verify;                     \
+208 } while (0)
+
+这里到case4: pscr_ret__=this_cpu_read_4(cpu_number)
+
+/arch/x86/include/asm/percpu.h
+415 #define this_cpu_read_4(pcp)        percpu_from_op("mov", pcp)
+
+
+182 #define percpu_from_op(op, var)             \
+183 ({                          \
+184     typeof(var) pfo_ret__;              \
+185     switch (sizeof(var)) {              \
+186     case 1:                     \
+187         asm(op "b "__percpu_arg(1)",%0"     \
+188             : "=q" (pfo_ret__)          \
+189             : "m" (var));           \
+190         break;                  \
+191     case 2:                     \
+192         asm(op "w "__percpu_arg(1)",%0"     \
+193             : "=r" (pfo_ret__)          \
+194             : "m" (var));           \
+195         break;                  \
+196     case 4:                     \
+197         asm(op "l "__percpu_arg(1)",%0"     \
+198             : "=r" (pfo_ret__)          \
+199             : "m" (var));           \
+200         break;                  \
+201     case 8:                     \
+202         asm(op "q "__percpu_arg(1)",%0"     \
+203             : "=r" (pfo_ret__)          \
+204             : "m" (var));           \
+205         break;                  \
+206     default: __bad_percpu_size();           \                              
+207     }                       \
+208     pfo_ret__;                  \
+209 })  
+
+67 #define __percpu_arg(x)     __percpu_prefix "%" #x 
+48 #define __percpu_prefix     "%%"__stringify(__percpu_seg)":"
+8  #define __percpu_seg        fs  
+
+执行case4,翻译过来就是:
+asm("movb %%fs:%P1, %0"\
+	: "=q" (pfo_ret__)
+	: "m" (var));
+
+其中 pfo_ret__是输出部%0, q,表示寄存器 eax、 ebx、 ecx 或 edx 中的一个,并且变量 pfo_ret__存放在这个寄存器中。var 就是刚才我们建立的那个临时的汇编变量 cpu_number,作为输入部%1。还记得“加载全局/中断描述符表”中把__KERNEL_PERCPU 段选择子赋给了 fs 了吗,不错,fs: cpu_number 就获得了当前存放在__KERNEL_PERCPU 段中 cpu_number 偏移的内存中,
+最后把结果返回给 pfo_ret__。所以这个宏最后的结果就是 pfo_ret__的值,其返回的是 CPU
+的编号,把它赋给 boot_cpu_init 函数的内部变量 cpu。
+
+那么这个偏移 cpu_number 到底是多少呢?众里寻他千百度,猛回首,这个偏移在生成的vmlinux.lds 文件的 504 行被我发现了:
+__per_cpu_load = .; .data.percpu 0
+
+不错,刚才.data.percpu 处被编译成 0,所以内部 cpu 的值就是 0。
+
+ 469     set_cpu_online(cpu, true);                                          
+ 470     set_cpu_active(cpu, true);                                           
+ 471     set_cpu_present(cpu, true);                                          
+ 472     set_cpu_possible(cpu, true);  
+就是激活当前 CPU 的 cpu_present_bits 中四个标志位online、active、present 和 possible.
+
+
+
+
+回到start_kernel中,来到page_address_init();函数主要是用来初始化地址散列表:
+
+(mm/highmem.c)
+478 void __init page_address_init(void)			//注意这个函数,与低版本内核不
+479 {							//同,并没有初始化   
+480     int i;						//page_address_maps
+481     
+482     for (i = 0; i < ARRAY_SIZE(page_address_htable); i++) {
+483         INIT_LIST_HEAD(&page_address_htable[i].lh);
+484         spin_lock_init(&page_address_htable[i].lock);
+485     } }
+
+page_address_htable是全局变量,定义:
+
+396 static struct page_address_slot {
+397     struct list_head lh;            /* List of page_address_maps */
+398     spinlock_t lock;            /* Protect this bucket's list */
+399 } ____cacheline_aligned_in_smp page_address_htable[1<<PA_HASH_ORDER];  
+486 } 
+
+那函数就很简单了____cacheline_aligned_in_smp 是一个编译优化选项,用于SMP方式的缓存优化。PA_HASH_ORDER 被定义为 7,所以 2^7=128。所以 ARRAY_SIZE(page_address_htable)为128,那么经过 128 个循环以后,每个 page_address_htable 元素的 lh 都被初始化成一个链表头了,而对于的互斥锁 lock 也通过 spin_lock_init 函数进行初始化了。
+
+
+我们知道一个 page 结构代表一个 4k 的页面,我们内核初始化这么一个全局的page_address_maps 和 page_address_htable 这么两个结构,作为页面的地
+址映射。   (!!!这里page_address_maps并没有初始化,它又是在哪里初始化的呢??!!)
+
+回到start_kernel
+接下来是打印版本信息.... 532     pr_notice("%s", linux_banner); 
+
+接着执行setup_arch(&command_line);(函数很长,不给出代码)
+此函数是start_kernel阶段最重要的一个函数,传给他的参数是一个未初始化的内部变量command_line,每个体系都有自己的setup_arch()函数,主要用于根据处理器硬件平台设置系统;解析linux命令行参数;设置0号进程的内存描述结构init_mm;系统内存管理初始化;统计并注册系统各种资源;以及其他项目的初始化等.具体编译哪个体系的 setup_arch()函数,由顶层Makefile中的 ARCH 变量决定:
+
+函数第一步是
+871     memcpy(&boot_cpu_data, &new_cpu_data, sizeof(new_cpu_data));
+arch/x86/kernel/head_32.S 初始化的 new_cpu_data 数据到 boot_cpu_data 中。new_cpu_data 主要是保存 CPU 的相关信息,在arch/x86/kernel/head_32.S的checkCPUtype中初始化.
+
+接着
+ 873     /*
+ 874      * copy kernel address range established so far and switch
+ 875      * to the proper swapper page table
+ 876      */
+ 877     clone_pgd_range(swapper_pg_dir     + KERNEL_PGD_BOUNDARY,              
+ 878             initial_page_table + KERNEL_PGD_BOUNDARY,
+ 879             KERNEL_PGD_PTRS);
+ 880     
+ 881     load_cr3(swapper_pg_dir);
+
+在上面,我们初始化了initial_page_table作为全局页目录表.这里把它复制给swapper_pg_dir,在这以后,swapper_pg_dir就一直当做全局目录表使用了....随后设置cr3,弃用以前的initial_page_table.
+定义在:arch/x86/kernel/head_32.S 
+659 initial_pg_pmd:
+660     .fill 1024*KPMDS,4,0
+661 #else  
+662 ENTRY(initial_page_table)
+663     .fill 1024,4,0
+664 #endif 
+665 initial_pg_fixmap:
+666     .fill 1024,4,0
+667 ENTRY(empty_zero_page)
+668     .fill 4096,1,0
+669 ENTRY(swapper_pg_dir)
+670     .fill 1024,4,0
+
+
+
+忽略其他来到 951     setup_memory_map();
+进入start_kernel内核初始化函数中的第一个内存管理函数(arch/x86/kernel/e820.c)
+1061 void __init setup_memory_map(void)                              
+1062 {   
+1063     char *who;
+1064     
+1065     who = x86_init.resources.memory_setup();
+1066     memcpy(&e820_saved, &e820, sizeof(struct e820map));
+1067     printk(KERN_INFO "e820: BIOS-provided physical RAM map:\n");
+1068     e820_print_map(who); 
+1069 }  
+
+函数最终调用x86_init.resources.memory_setup();实现对e820内存图的优化.
+并根据boot_params 中 e820_map 字段的值来设置全局变量 e820 的值。这个全局变量是一个e820map 结构:
+struct e820map {
+__u32 nr_map;
+struct e820entry map[E820_X_MAX];
+};
+
+我们在执行实模式下代码 main 函数的时候调用了一个 detect_memory_e820()函数,当时该函数通过 BIOS 服务程序 int 0x15 获得系统启动后的所有可用空间,共有boot_params.e820_entries个可用空间,每块空间作为 boot_params.e820_map[]数组的元素,存放着他们的起始地址、大小和元素。
+
+这里说个题外话,探测一个 PC 机内存的最好方法是就是通过调用 INT 0x15,eax = 0xe820来实现。这个功能在 2002 年以后被所有 PC 机所使用,这是唯一能够探测超过 4G 大小内存的方案,当然,这个方法也可以被认为是内存的最终检测方法。实际上,这个函数返回一个非排序列表,这个列表包含了那些没有使用的内存信息的项,并且可能返回存在覆盖的区域。在 linux 中每个列表项被存放在 ES:EDI 指定的内存区域中。每个项均有一定的格式:即 2个8字节字 段,一个2字节字段。我们前面看见了,对于内存探测的实现由函数detect_memory_e820 来实现的,在这个函数中,使用了一个do...while()循环来实现,并将所探测的内容写入boot_params.e820_map 数组中。
+
+
+
+那么,x86_init.resources.memory_setup()是个什么函数呢?在 arch/x86/kernel/x86_init.c 的 32行,我们看到又有一个__initdata 的定义:
+ 32                                      
+ 33 /*                                   
+ 34  * The platform setup functions are preset with the default functions
+ 35  * for standard PC hardware.         
+ 36  */  
+ 37 struct x86_init_ops x86_init __initdata = {                                                                                                                
+ 38  
+ 39     .resources = {
+ 40         .probe_roms     = probe_roms,
+ 41         .reserve_resources  = reserve_standard_io_resources,
+ 42         .memory_setup       = default_machine_specific_memory_setup,
+ 43     },
+ 44    
+ 45     .mpparse = {
+ 46         .mpc_record     = x86_init_uint_noop,
+ 47         .setup_ioapic_ids   = x86_init_noop,
+ 48         .mpc_apic_id        = default_mpc_apic_id,
+ 49         .smp_read_mpc_oem   = default_smp_read_mpc_oem,
+ 50         .mpc_oem_bus_info   = default_mpc_oem_bus_info,
+ 51         .find_smp_config    = default_find_smp_config,
+ 52         .get_smp_config     = default_get_smp_config,
+ 53     },
+ 54    
+ 55     .irqs = {
+ 56         .pre_vector_init    = init_ISA_irqs,
+ 57         .intr_init      = native_init_IRQ,
+ 58         .trap_init      = x86_init_noop,
+ 59     },
+ 60    
+ 61     .oem = {
+ 62         .arch_setup     = x86_init_noop,
+ 63         .banner         = default_banner,
+ 64     },
+ 65    
+ 66     .paging = {
+ 67         .pagetable_init     = native_pagetable_init,
+ 68     },
+ 69    
+ 70     .timers = {
+ 71         .setup_percpu_clockev   = setup_boot_APIC_clock,
+ 72         .tsc_pre_init       = x86_init_noop,
+ 73         .timer_init     = hpet_time_init,
+ 74         .wallclock_init     = x86_init_noop,
+ 75     },
+ 76    
+ 77     .iommu = {
+ 78         .iommu_init     = iommu_init_noop,
+ 79     },
+ 80    
+ 81     .pci = {
+ 82         .init           = x86_default_pci_init,
+ 83         .init_irq       = x86_default_pci_init_irq,
+ 84         .fixup_irqs     = x86_default_pci_fixup_irqs,
+ 85     },
+ 86 }; 
+这里,跟其他__initdata数据一样,在编译的时候就放在init数据区了.那么x86_init.resources.memory_setup也就是42行的default_machine_specific_memory_setup函数.我们看这个函数:(arch/x86/kernel/e820.c)
+1023 char *__init default_machine_specific_memory_setup(void)
+1024 {  
+1025     char *who = "BIOS-e820";
+1026     u32 new_nr;
+1027     /*
+1028      * Try to copy the BIOS-supplied E820-map.
+1029      *
+1030      * Otherwise fake a memory map; one section from 0k->640k,
+1031      * the next section from 1mb->appropriate_mem_k
+1032      */
+1033     new_nr = boot_params.e820_entries;
+1034     sanitize_e820_map(boot_params.e820_map,	//内存消毒
+1035             ARRAY_SIZE(boot_params.e820_map),	//
+1036             &new_nr);				//
+1037     boot_params.e820_entries = new_nr;
+1038     if (append_e820_map(boot_params.e820_map, boot_params.e820_entries)
+1039       < 0) {					//正常返回0
+1040         u64 mem_size;
+1041    
+1042         /* compare results from other methods and take the greater */
+1043         if (boot_params.alt_mem_k
+1044             < boot_params.screen_info.ext_mem_k) {
+1045             mem_size = boot_params.screen_info.ext_mem_k;
+1046             who = "BIOS-88";
+1047         } else {
+1048             mem_size = boot_params.alt_mem_k;
+1049             who = "BIOS-e801";
+1050         }
+1051    
+1052         e820.nr_map = 0;
+1053         e820_add_region(0, LOWMEMSIZE(), E820_RAM);
+1054         e820_add_region(HIGH_MEMORY, mem_size << 10, E820_RAM);
+1055     }
+1056    
+1057     /* In case someone cares... */
+1058     return who;
+1059 }  
+
+
+1038行append_e820_map(boot_params.e820_map, boot_params.e820_entries)将boot_params.e820_map[]数组中的所有内存区物理内存区物理信息拷贝到全局变量e820中.
+
+ 410 static int __init append_e820_map(struct e820entry *biosmap, int nr_map)
+ 411 {               
+ 412     /* Only one memory region (or negative)? Ignore it */
+ 413     if (nr_map < 2)
+ 414         return -1;
+ 415                 
+ 416     return __append_e820_map(biosmap, nr_map);
+ 417 }     
+
+
+ 381 static int __init __append_e820_map(struct e820entry *biosmap, int nr_map)                                                                                
+ 382 {
+ 383     while (nr_map) {
+ 384         u64 start = biosmap->addr;
+ 385         u64 size = biosmap->size;
+ 386         u64 end = start + size;
+ 387         u32 type = biosmap->type;
+ 388                 
+ 389         /* Overflow in 64 bits? Ignore the memory map. */
+ 390         if (start > end)
+ 391             return -1;
+ 392                 
+ 393         e820_add_region(start, size, type);
+ 394                 
+ 395         biosmap++;
+ 396         nr_map--;
+ 397     }           
+ 398     return 0;   
+ 399 }   
+
+ 128 void __init e820_add_region(u64 start, u64 size, int type)              
+ 129 {
+ 130     __e820_add_region(&e820, start, size, type);
+ 131 }  
+
+ 110 static void __init __e820_add_region(struct e820map *e820x, u64 start, u64 size,
+ 111                      int type)
+ 112 {   
+ 113     int x = e820x->nr_map;
+ 114     
+ 115     if (x >= ARRAY_SIZE(e820x->map)) {
+ 116         printk(KERN_ERR "e820: too many entries; ignoring [mem %#010llx-%#010llx]\n",
+ 117                (unsigned long long) start,
+ 118                (unsigned long long) (start + size - 1));
+ 119         return;
+ 120     }
+ 121     
+ 122     e820x->map[x].addr = start;
+ 123     e820x->map[x].size = size;
+ 124     e820x->map[x].type = type;
+ 125     e820x->nr_map++;
+ 126 }   
+
+
+default_machine_specific_memory_setup最终返回"BIOS-e820"字符串,赋给 setup_memory_map()函数中的内部变量who。
+
+setup_memory_map()之后 setup_memory_map 函数将 e820 的数据保存到 e820_saved 中,相当于备份。
+
+
+
+回到start_arch()
+ 958     init_mm.start_code = (unsigned long) _text;
+ 959     init_mm.end_code = (unsigned long) _etext;
+ 960     init_mm.end_data = (unsigned long) _edata;
+ 961     init_mm.brk = _brk_end;
+ 962      
+ 963     mpx_mm_init(&init_mm);
+ 964      
+ 965     code_resource.start = __pa_symbol(_text);
+ 966     code_resource.end = __pa_symbol(_etext)-1;
+ 967     data_resource.start = __pa_symbol(_etext);
+ 968     data_resource.end = __pa_symbol(_edata)-1;
+ 969     bss_resource.start = __pa_symbol(__bss_start);
+ 970     bss_resource.end = __pa_symbol(__bss_stop)-1;
+
+调用系统编译生成的数据来初始化 init_mm 的 start_code、end_code、end_data以及.brk 等字段;同时也初始化 code_resource 的 start、 end 字段和 data_resource 的 start、 end字段以及 bss_resource 的 start、end 字段。这个 init_mm 还记得吗?初始化 0 号进程的时候,它的 task_struct 的 active_mm 就被赋成了这个。它是一个 mm_struct 结构,在编译 vmlinux的时候就只给他初始化了一下字段:
+
+ 16 struct mm_struct init_mm = {                                                                                                                               
+ 17     .mm_rb      = RB_ROOT,
+ 18     .pgd        = swapper_pg_dir,
+ 19     .mm_users   = ATOMIC_INIT(2),
+ 20     .mm_count   = ATOMIC_INIT(1),
+ 21     .mmap_sem   = __RWSEM_INITIALIZER(init_mm.mmap_sem),
+ 22     .page_table_lock =  __SPIN_LOCK_UNLOCKED(init_mm.page_table_lock),
+ 23     .mmlist     = LIST_HEAD_INIT(init_mm.mmlist),
+ 24     INIT_MM_CONTEXT(init_mm)
+ 25 };    
+
+
+这里初始化它的 start_code、end_code、end_data 以及.brk 等字段分别为_text、_etext、_edata和_brk_end,是一步极其重要的过程,表明了当前 0 号进程进程的虚拟内存技术就可以用了。
+至于后面那几个 resource,通过 870~872 行代码将其作为一个 IO resource 保存起来,有关 IO端口的相关知识,请查阅博客“Linux I/O 体系结构”
+
+回到start_arch()忽略其他来到1085
+1058     max_pfn = e820_end_of_ram_pfn();
+函数根据e820的数据来获得32位可用物理内存地址的最大值并右移PAGE_SHIFT,也就是12位最后由函数 e820_end_pfn 返回这个 20 位的值,保存在内部变量 max_pfn 中,作为总的页面数量.
+
+ 793 unsigned long __init e820_end_of_ram_pfn(void) 
+ 794 {               
+ 795     return e820_end_pfn(MAX_ARCH_PFN, E820_RAM);
+ 796 }   
+
+
+
+ 759 static unsigned long __init e820_end_pfn(unsigned long limit_pfn, unsigned type)
+ 760 {  
+ 761     int i;
+ 762     unsigned long last_pfn = 0;
+ 763     unsigned long max_arch_pfn = MAX_ARCH_PFN;
+ 764    
+ 765     for (i = 0; i < e820.nr_map; i++) {
+ 766         struct e820entry *ei = &e820.map[i];
+ 767         unsigned long start_pfn;
+ 768         unsigned long end_pfn;
+ 769    
+ 770         if (ei->type != type)
+ 771             continue;
+ 772    
+ 773         start_pfn = ei->addr >> PAGE_SHIFT;
+ 774         end_pfn = (ei->addr + ei->size) >> PAGE_SHIFT;
+ 775    
+ 776         if (start_pfn >= limit_pfn)
+ 777             continue;
+ 778         if (end_pfn > limit_pfn) {
+ 779             last_pfn = limit_pfn;
+ 780             break;
+ 781         }
+ 782         if (end_pfn > last_pfn)
+ 783             last_pfn = end_pfn;
+ 784     }
+ 785    
+ 786     if (last_pfn > max_arch_pfn)
+ 787         last_pfn = max_arch_pfn;
+ 788    
+ 789     printk(KERN_INFO "e820: last_pfn = %#lx max_arch_pfn = %#lx\n",
+ 790              last_pfn, max_arch_pfn);
+ 791     return last_pfn;
+ 792 }  
+
+
+回到start_arch中1067    find_low_pfn_range();它根据max_pfn是否大于MAXMEM_PFN来判断是否启用了高端内存.
+
+644 void __init find_low_pfn_range(void) 
+645 {       
+646     /* it could update max_pfn */
+647      
+648     if (max_pfn <= MAXMEM_PFN)
+649         lowmem_pfn_init();
+650     else
+651         highmem_pfn_init();
+652 }  
+
+这个 MAXMEM_PFN 值等于多少,大家自己去查,不是很复杂,只是这个值跟max_pfn一样,也是除去低12位的20位的一个数值。如果启用了,就调用highmem_pfn_init()函数将全局变量max_low_pfn设置为MAXMEM_PFN;并设置全局变量 highmem_pages 为 max_pfn - MAXMEM_PFN,作为高端页面的数量:
+
+
+607 static void __init highmem_pfn_init(void)
+608 {
+609     max_low_pfn = MAXMEM_PFN;
+610  
+611     if (highmem_pages == -1)
+612         highmem_pages = max_pfn - MAXMEM_PFN;
+613  
+614     if (highmem_pages + MAXMEM_PFN < max_pfn)
+615         max_pfn = MAXMEM_PFN + highmem_pages;
+616  
+617     if (highmem_pages + MAXMEM_PFN > max_pfn) {
+618         printk(KERN_WARNING MSG_HIGHMEM_TOO_SMALL,
+619             pages_to_mb(max_pfn - MAXMEM_PFN),
+620             pages_to_mb(highmem_pages));
+621         highmem_pages = 0;
+622     }   
+623 #ifndef CONFIG_HIGHMEM
+624     /* Maximum memory usable is what is directly addressable */
+625     printk(KERN_WARNING "Warning only %ldMB will be used.\n", MAXMEM>>20);
+626     if (max_pfn > MAX_NONPAE_PFN)
+627         printk(KERN_WARNING "Use a HIGHMEM64G enabled kernel.\n");
+628     else
+629         printk(KERN_WARNING "Use a HIGHMEM enabled kernel.\n");
+630     max_pfn = MAXMEM_PFN;
+....
+639 }  
+
+
+!!!!!!!!!!着手建立最终内核页表!!!!!!!!!!!!!!!!!!
+
+回到start_arch中的1088     early_alloc_pgt_buf();它是为前期的页表分配空间.具体分配了两种页表,看注释是分配了12k给初始化时用页表,12k给了ISA空间映射用页表.也就是分配12k的页表空间作为前期内存分页用,其余的再动态分配,而不像以前那样分配全部页表空间.
+117 /* need 3 4k for initial PMD_SIZE,  3 4k for 0-ISA_END_ADDRESS */
+118 #define INIT_PGT_BUF_SIZE   (6 * PAGE_SIZE)
+120 void  __init early_alloc_pgt_buf(void) 
+121 {
+122     unsigned long tables = INIT_PGT_BUF_SIZE;	6*4096
+123     phys_addr_t base;
+124      
+125     base = __pa(extend_brk(tables, PAGE_SIZE));	//扩展brk,但是不能超过brk_limit
+126      
+127     pgt_buf_start = base >> PAGE_SHIFT;		//pgt开始页框数
+128     pgt_buf_end = pgt_buf_start;			//已分配pgt结束位置页框数
+129     pgt_buf_top = pgt_buf_start + (tables >> PAGE_SHIFT);//分配的pgt空间结尾页框数
+130 }  
+
+可以看到是从brk中分配内存作为页表空间,就和之前建立页表时一样,这边其实进行第二次分页,需要重做之前的工作.注意扩展时没有覆盖以前的页表!
+262 void * __init extend_brk(size_t size, size_t align)
+263 {        
+264     size_t mask = align - 1;
+265     void *ret;
+266          
+267     BUG_ON(_brk_start == 0);
+268     BUG_ON(align & mask);
+269          
+270     _brk_end = (_brk_end + mask) & ~mask;
+271     BUG_ON((char *)(_brk_end + size) > __brk_limit);
+272          
+273     ret = (void *)_brk_end;
+274     _brk_end += size;
+275          
+276     memset(ret, 0, size);
+277          
+278     return ret;
+279 }    
+
+
+
+得到了总的页面数 max_pfn 和高端页面数 highmem_pages 之后,1126 init_mem_mapping(); 函数来建立系统初始化阶段的临时分页体系:  
+这里我们需要注意,之前我们已经建立了分页机制,但是,当时建立的临时页表个数只取决于_end的位置,也就是把解压缩后的内核代码映射出来了,全局目录表是initial_page_table,在setup_arch()初期复制给了swapper_pg_dir,而这里需要映射所有可用的RAM(注意这里包括了已经映射了的内核代码,页目录)以页为单位分成多个页,每个页一个比特,提供一个初始阶段内存的分配和释放管理平台,全局目录表是swapper_pg_dir.
+
+现在要把所有的RAM映射到内存空间.那么内核需要根据e820物理内存的布局,也就是RAM的结点布局对多个结点及结点的管理区作初始化,最终把除去内核之外所有剩余的页交给页框分配器,同时也就完成了页框分配器的初始化.
+
+这里需要注意,内核从此刻开始就开始建立!!最终内核页表了!!这是个什么东西呢?前面我们初始化了临时内核页表,目的已经讲过了.这里建立的是最终内核页表.分为三种情况:
+
+第一种:RAM小于896MB时,也就是没有高端内存的情况.
+这种情况是把所有的RAM全部映射到0xc0000000,由内核页表所提供的最终映射必须把从0xc0000000开始的线性地址转化为从0开始的物理地址,主内核页全局目录仍然保存在swapper_pg_dir变量中。
+
+第二种:RAM在896Mb到4GB之间,也就是存在高端内存的情况.
+这种情况就不能把所有的RAM全部映射到内核空间了,Linux在初始化阶段只是把一个具有896MB的RAM映射到内核线性地址空间。如果一个程序需要对现有RAM的其余部分寻址，那就必须把某些其他的线性地址间隔映射到所需的RAM，做法就是修改某些页表项的值。内核使用与前一种情况相同的代码来初始化页全局目录。
+
+第三种:RAM在4GB以上.
+现代计算机，特别是些高性能的服务器内存远远超过4GB，那么内核页表初始化怎么做呢；更确切地说，我们处理以下发生的情况：
+• CPU模式支持物理地址扩展（PAE）
+• RAM容量大于4GB
+• 内核以PAE支持来编译
+
+尽管PAE处理36位物理地址，但是线性地址依然是32位地址。如前所述，Linux映射一个896MB的RAM到内核地址空间；剩余RAM留着不映射，并由动态重映射来处理。与前一种情况的主要差异是使用三级分页模型。其实，即使我们的CPU支持PAE，但是也只能有寻址能力为64GB的内核页表，所以，如果要建立更高性能的服务器，建议改善动态重映射算法，或者干脆升级为64位的处理器。
+
+
+我们这里只分析第二种情况,(第二种情况包含第一种,还是先映射896MB空间,剩余的高端内存通过其他途径映射)
+假设我们内存在896MB~4GB之间为n,那么各个参数如下:
+max_pfn=n>>PAGE_SHIFT
+max_low_pfn=MAXMEM_PFN(也就是896MB>>PAGE_SHIFT)
+highmem_pages=max_pfn - MAXMEM_PFN,作为高端页面的数量.
+
+
+555 void __init init_mem_mapping(void)
+556 {
+557     unsigned long end;
+558    
+559     probe_page_size_mask();
+560    
+561 #ifdef CONFIG_X86_64
+562     end = max_pfn << PAGE_SHIFT;		//64位处理器
+563 #else					//获取最大内存地址
+564     end = max_low_pfn << PAGE_SHIFT;	//END=896mb!!!!!!!!!
+565 #endif
+566    
+567     /* the ISA range is always mapped regardless of memory holes */
+568     init_memory_mapping(0, ISA_END_ADDRESS);//0x100000
+569    
+570     /*
+571      * If the allocation is in bottom-up direction, we setup direct mapping
+572      * in bottom-up, otherwise we setup direct mapping in top-down.
+573      */
+574     if (memblock_bottom_up()) {
+575         unsigned long kernel_end = __pa_symbol(_end);
+576    
+577         /*
+578          * we need two separate calls here. This is because we want to
+579          * allocate page tables above the kernel. So we first map
+580          * [kernel_end, end) to make memory above the kernel be mapped
+581          * as soon as possible. And then use page tables allocated above
+582          * the kernel to map [ISA_END_ADDRESS, kernel_end).
+583          */
+584         memory_map_bottom_up(kernel_end, end);
+585         memory_map_bottom_up(ISA_END_ADDRESS, kernel_end);
+586     } else {
+587         memory_map_top_down(ISA_END_ADDRESS, end);
+588     }
+589    
+590 #ifdef CONFIG_X86_64
+591     if (max_pfn > max_low_pfn) {
+592         /* can we preseve max_low_pfn ?*/
+593         max_low_pfn = max_pfn;
+594     }
+595 #else
+596     early_ioremap_page_table_range_init();		
+597 #endif
+598    
+599     load_cr3(swapper_pg_dir);
+600     __flush_tlb_all();
+601    
+602     early_memtest(0, max_pfn_mapped << PAGE_SHIFT);
+603 }  
+
+
+
+看init_mem_mapping(void)函数,是分两步走的,首先映射0-ISA_END_ADDRESS(0x100000)的RAM
+init_memory_mapping(0, ISA_END_ADDRESS);//0x100000,接着根据内存是否采用自底向上(bottom_up)使用方式来决定如何映射每次,这里我们仅分析memory_map_top_down(ISA_END_ADDRESS, end);
+
+那么内存映射两个阶段是0~0x100000和0x100000~end,分别通过init_memory_mapping和memory_map_top_down来映射.
+
+
+先看0~0x1000000的内存映射:init_memory_mapping(0, ISA_END_ADDRESS);//0x100000
+375 unsigned long __init_refok init_memory_mapping(unsigned long start, 
+376                            unsigned long end)
+377 {                    
+378     struct map_range mr[NR_RANGE_MR];
+379     unsigned long ret = 0;
+380     int nr_range, i; 
+381                      
+382     pr_info("init_memory_mapping: [mem %#010lx-%#010lx]\n",
+383            start, end - 1);
+384                      
+385     memset(mr, 0, sizeof(mr));
+386     nr_range = split_mem_range(mr, 0, start, end);
+387                      
+388     for (i = 0; i < nr_range; i++)
+389         ret = kernel_physical_mapping_init(mr[i].start, mr[i].end,
+390                            mr[i].page_size_mask);
+391      
+392     add_pfn_range_mapped(start >> PAGE_SHIFT, ret >> PAGE_SHIFT);
+393         
+394     return ret >> PAGE_SHIFT;
+395 }   
+map_range结构如下:
+150 struct map_range { 
+151     unsigned long start;	//内存开始地址
+152     unsigned long end;	//内存结束地址
+153     unsigned page_size_mask;//对齐mask
+154 };  
+
+split_mem_range()函数按照不同的对齐方式来划分内存.最后就调用kernel_physical_mapping_init()来根据mr数组中的内存划分来映射内存,我们分析4k对齐的情况.
+
+split_mem_range()中会用到两个宏:
+#define __round_mask(x, y) ((__typeof__(x))((y)-1))
+#define round_up(x, y) ((((x)-1) | __round_mask(x, y))+1)
+#define round_down(x, y) ((x) & ~__round_mask(x, y))
+
+round_up()和round_down()用来向上舍入和向下舍入.为了就是使内存对齐....
+
+
+245 /*  
+246  * This maps the physical memory to kernel virtual address space, a total
+247  * of max_low_pfn pages, by creating page tables starting from address
+248  * PAGE_OFFSET:
+249  */ 
+251 kernel_physical_mapping_init(unsigned long start,
+252                  unsigned long end,
+253                  unsigned long page_size_mask)
+254 {  
+255     int use_pse = page_size_mask == (1<<PG_LEVEL_2M);
+256     unsigned long last_map_addr = end;
+257     unsigned long start_pfn, end_pfn;
+258     pgd_t *pgd_base = swapper_pg_dir;
+259     int pgd_idx, pmd_idx, pte_ofs;
+260     unsigned long pfn;
+261     pgd_t *pgd;
+262     pmd_t *pmd;
+263     pte_t *pte;
+264     unsigned pages_2m, pages_4k;
+265     int mapping_iter;
+266    
+267     start_pfn = start >> PAGE_SHIFT;
+268     end_pfn = end >> PAGE_SHIFT;
+269    
+270     /*
+271      * First iteration will setup identity mapping using large/small pages
+272      * based on use_pse, with other attributes same as set by
+273      * the early code in head_32.S
+274      *
+275      * Second iteration will setup the appropriate attributes (NX, GLOBAL..)
+276      * as desired for the kernel identity mapping.
+277      *
+278      * This two pass mechanism conforms to the TLB app note which says:
+279      *
+280      *     "Software should not write to a paging-structure entry in a way
+281      *      that would change, for any linear address, both the page size
+282      *      and either the page frame or attributes."
+283      */
+284     mapping_iter = 1;
+285    
+286     if (!cpu_has_pse)
+287         use_pse = 0;
+288    
+289 repeat:
+290     pages_2m = pages_4k = 0;
+291     pfn = start_pfn;
+292     pgd_idx = pgd_index((pfn<<PAGE_SHIFT) + PAGE_OFFSET);
+293     pgd = pgd_base + pgd_idx;
+294     for (; pgd_idx < PTRS_PER_PGD; pgd++, pgd_idx++) {
+295         pmd = one_md_table_init(pgd);
+296    
+297         if (pfn >= end_pfn)
+298             continue;
+299 #ifdef CONFIG_X86_PAE
+300         pmd_idx = pmd_index((pfn<<PAGE_SHIFT) + PAGE_OFFSET);
+301         pmd += pmd_idx;
+302 #else
+303         pmd_idx = 0;
+304 #endif
+305         for (; pmd_idx < PTRS_PER_PMD && pfn < end_pfn;  
+306              pmd++, pmd_idx++) {
+307             unsigned int addr = pfn * PAGE_SIZE + PAGE_OFFSET;
+308     
+309             /*
+310              * Map with big pages if possible, otherwise
+311              * create normal page tables:
+312              */
+313             if (use_pse) {
+314                 unsigned int addr2;
+315                 pgprot_t prot = PAGE_KERNEL_LARGE;
+316                 /*
+317                  * first pass will use the same initial
+318                  * identity mapping attribute + _PAGE_PSE.
+319                  */
+320                 pgprot_t init_prot =
+321                     __pgprot(PTE_IDENT_ATTR |
+322                          _PAGE_PSE);
+323     
+324                 pfn &= PMD_MASK >> PAGE_SHIFT;
+325                 addr2 = (pfn + PTRS_PER_PTE-1) * PAGE_SIZE +
+326                     PAGE_OFFSET + PAGE_SIZE-1;
+327     
+328                 if (is_kernel_text(addr) ||
+329                     is_kernel_text(addr2))
+330                     prot = PAGE_KERNEL_LARGE_EXEC;
+331     
+332                 pages_2m++;
+333                 if (mapping_iter == 1)
+334                     set_pmd(pmd, pfn_pmd(pfn, init_prot));
+335                 else
+336                     set_pmd(pmd, pfn_pmd(pfn, prot));
+337     
+338                 pfn += PTRS_PER_PTE;
+339                 continue;
+340             }
+341             pte = one_page_table_init(pmd);
+342     
+343             pte_ofs = pte_index((pfn<<PAGE_SHIFT) + PAGE_OFFSET);
+344             pte += pte_ofs;
+345             for (; pte_ofs < PTRS_PER_PTE && pfn < end_pfn;
+346                  pte++, pfn++, pte_ofs++, addr += PAGE_SIZE) {
+347                 pgprot_t prot = PAGE_KERNEL;
+348                 /*
+349                  * first pass will use the same initial
+350                  * identity mapping attribute.
+351                  */
+352                 pgprot_t init_prot = __pgprot(PTE_IDENT_ATTR);
+353                                                                                                                                                            
+354                 if (is_kernel_text(addr))
+355                     prot = PAGE_KERNEL_EXEC;
+356    
+357                 pages_4k++;
+358                 if (mapping_iter == 1) {
+359                     set_pte(pte, pfn_pte(pfn, init_prot));
+360                     last_map_addr = (pfn << PAGE_SHIFT) + PAGE_SIZE;
+361                 } else
+362                     set_pte(pte, pfn_pte(pfn, prot));
+363             }
+364         }
+365     }
+366     if (mapping_iter == 1) {
+367         /*
+368          * update direct mapping page count only in the first
+369          * iteration.
+370          */
+371         update_page_count(PG_LEVEL_2M, pages_2m);
+372         update_page_count(PG_LEVEL_4K, pages_4k);
+373    
+374         /*
+375          * local global flush tlb, which will flush the previous
+376          * mappings present in both small and large page TLB's.
+377          */
+378         __flush_tlb_all();
+379    
+380         /*
+381          * Second iteration will set the actual desired PTE attributes.
+382          */
+383         mapping_iter = 2;
+384         goto repeat;
+385     }
+386     return last_map_addr;
+387 } 
+
+根据注释,这个函数的作用是将物理内存地址都映射到从内核空间开始(虚拟地址)的地址,即从0xc0000000一共有max_low_pfn页.
+函数一开始定义了4个变量:
+260     unsigned long pfn;-------->页框号,初始是0.
+261     pgd_t *pgd;--------------->指向一个目录项开始的地址.
+262     pmd_t *pmd;--------------->指向一个中间目录开始的地址.
+263     pte_t *pte;--------------->指向一个页表开始的地址.
+
+还有就是258     pgd_t *pgd_base = swapper_pg_dir; 指向了页全局目录地址swapper_pg_dir,也就是在上面arch/x86/kernel/head_32.s中定义的,一直没有动过.
+656 __PAGE_ALIGNED_BSS
+657     .align PAGE_SIZE
+658 #ifdef CONFIG_X86_PAE
+659 initial_pg_pmd:
+660     .fill 1024*KPMDS,4,0
+661 #else  
+662 ENTRY(initial_page_table)
+663     .fill 1024,4,0
+664 #endif 
+665 initial_pg_fixmap:
+666     .fill 1024,4,0
+667 ENTRY(empty_zero_page)
+668     .fill 4096,1,0
+669 ENTRY(swapper_pg_dir)                                                                                                                                      
+670     .fill 1024,4,0
+接下来:
+291     pfn = start_pfn;
+292     pgd_idx = pgd_index((pfn<<PAGE_SHIFT) + PAGE_OFFSET);
+293     pgd = pgd_base + pgd_idx;
+决定从全局目录的哪项开始分配.
+667 #define pgd_index(address) (((address) >> PGDIR_SHIFT) & (PTRS_PER_PGD - 1)) 
+ 
+#define PGDIR_SHIFT 22   
+#define PTRS_PER_PGD    1024
+
+如果pfn是0,那么得到的pgd_idx=768(跟前面一样^_^),也就是从虚拟地址0xc0000000处开始映射,定位pgd到768项,也就是从目录表中的768项开始设置.从768到1024这256个表项被linux内核设置为内核目录项,低768个目录项被用户空间使用pgd = pgd_base + pgd_idx;pgd便指向了第768个表项.
+
+接下来就是进入循环,准备填充从768号全局目录表项开始剩余目录项的内容.
+295         pmd = one_md_table_init(pgd);
+one_md_table_init(pgd)是根据pgd找到指向的pmd表.在没有开启PAE的情况下,直接返回pgd.
+第一阶段映射时,start=0x00000000 end=0x100000.(4k的情况下)起始页框(page frame number)pfn=start_pfn=0.
+
+随后设置pmd_idx=0,进入第二个for循环,在linux的3级映射模型中,是要设置pmd表的,但是在2级映射中忽略,只循环一次,直接进行页表的pte设置.
+
+
+在2.6.11后，Linux采用四级分页模型，这四级页目录分别为
+页全局目录(Page Global Directory)
+页上级目录(Page Upper Directory)
+页中间目录(Page Middle Directory)
+页表(Page Table)
+
+PTRS_PER_PTE，PTRS_PER_PMD，PTRS_PER_PUD以及PTRS_PER_PGD用于计算页表，页中间目录，页上级目录和页全局目录表中表项的个数。当PAE被禁止时，它们产生的值分别为1024，1，1和1024。当PAE被激活时，产生的值分别为512，512，1和4。
+
+注意：PAE关闭时，PGD就是PDT，此时不用PUD，PMD。虽然它们两个在线性地址中，但长度为0，2^0=1，也就是说，它们都是有一个数组元素的数组。当PAE启动时，PGD指示四个PDPT entry中的哪一个， 不使用PUD。
+
+这里需要注意的是，如果是32位未开启PAE，则pud_offset，pmd_offset返回的仍是pgd；
+
+
+对于没有启动PAE的32位系统，Linux虽然也采用四级分页模型，但本质上只用到了两级分页，Linux通过将"页上级目录"位域和“页中间目录”位域全为0来达到使用两级分页的目的，但为了保证程序能32位和64系统上都能运行，内核保留了页上级目录和页中间目录在指针序列中的位置，它们的页目录数都被内核置为1，并把这2个页目录项映射到适合的全局目录项。
+
+所以在没有启动PAE的系统中,PTRS_PER_PMD =1:
+305         for (; pmd_idx < PTRS_PER_PMD && pfn < end_pfn;  
+306              pmd++, pmd_idx++)
+只执行一次.循环中直接设置PTE,而这里的pmd其实就是pgd(PAE未开启的情况下)
+
+
+341             pte = one_page_table_init(pmd);	//根据pmd得到pte
+342                                    
+343             pte_ofs = pte_index((pfn<<PAGE_SHIFT) + PAGE_OFFSET);
+344             pte += pte_ofs;        
+345             for (; pte_ofs < PTRS_PER_PTE && pfn < end_pfn;
+346                  pte++, pfn++, pte_ofs++, addr += PAGE_SIZE) {
+347                 pgprot_t prot = PAGE_KERNEL;
+348                 /*                 
+349                  * first pass will use the same initial
+350                  * identity mapping attribute.
+351                  */                
+352                 pgprot_t init_prot = __pgprot(PTE_IDENT_ATTR);
+353                                    
+354                 if (is_kernel_text(addr))
+355                     prot = PAGE_KERNEL_EXEC;
+356                            
+357                 pages_4k++;        
+358                 if (mapping_iter == 1) {
+359                     set_pte(pte, pfn_pte(pfn, init_prot));
+360                     last_map_addr = (pfn << PAGE_SHIFT) + PAGE_SIZE;
+361                 } else             
+362                     set_pte(pte, pfn_pte(pfn, prot));
+363             }  
+
+这里的one_page_table_init非常重要它会去从已经映射的内存中分配一页内存来作为页表空间,然后来从pfn到end_pfn页框来填充PTE完成映射.
+ 92  * Create a page table and place a pointer to it in a middle page			
+ 93  * directory entry:	
+ 94  */ 
+ 95 static pte_t * __init one_page_table_init(pmd_t *pmd)
+ 96 {   
+ 97     if (!(pmd_val(*pmd) & _PAGE_PRESENT)) {
+ 98         pte_t *page_table = (pte_t *)alloc_low_page();                      
+ 99     
+100         paravirt_alloc_pte(&init_mm, __pa(page_table) >> PAGE_SHIFT);
+101         set_pmd(pmd, __pmd(__pa(page_table) | _PAGE_TABLE));			//未启动PAE情况下就是设置pgt
+102         BUG_ON(page_table != pte_offset_kernel(pmd, 0));
+103     }  
+首先看pte_t *page_table = (pte_t *)alloc_low_page():
+  4 void *alloc_low_pages(unsigned int num);
+  5 static inline void *alloc_low_page(void)                                    
+  6 {
+  7     return alloc_low_pages(1);       
+  8 }   
+
+看函数alloc_low_pages(unsigned int num),看解释是从已经直接映射的内存中分配一页内存.这里的已经映射是指在临时内核页表中已经映射,我们应该还记得在之前将initial_page_table复制给了swapper_pg_dir,并且重新设置了cr3.虽然我们这里要重新进行内存分页,建立最终内核页表,但是在再次设置cr3时,临时分页继续奏效,所有这里返回的的确是内核初始化建立临时页表时映射的内存. 可以看到if ((pgt_buf_end + num) > pgt_buf_top || !can_use_brk_pgt),还记得上面的函数extend_brk(size_t size, size_t align)么?当时它扩展了brk作为页表空间,而brk确实是已经映射的内存.
+ 67 /*
+ 68  * Pages returned are already directly mapped.
+ 69  *
+ 70  * Changing that is likely to break Xen, see commit:                        
+ 71  *
+ 72  *    279b706 x86,xen: introduce x86_init.mapping.pagetable_reserve
+ 73  *
+ 74  * for detailed information.
+ 75  */
+ 76 __ref void *alloc_low_pages(unsigned int num)
+ 77 {
+ 78     unsigned long pfn;
+ 79     int i;
+ 80    
+ 81     if (after_bootmem) {		//这是还没有初始化bootmem,
+ 82         unsigned int order;		//关于bootmem将会在以后介绍
+ 83     
+ 84         order = get_order((unsigned long)num << PAGE_SHIFT);
+ 85         return (void *)__get_free_pages(GFP_ATOMIC | __GFP_NOTRACK |
+ 86                         __GFP_ZERO, order);
+ 87     }
+ 88       //如果brk已经没有空间或者不能使用brk就来到这里,需要从已经映射的内存中重新分配内存
+ 89     if ((pgt_buf_end + num) > pgt_buf_top || !can_use_brk_pgt) {
+ 90         unsigned long ret;
+ 91         if (min_pfn_mapped >= max_pfn_mapped)
+ 92             panic("alloc_low_pages: ran out of memory");
+ 93         ret = memblock_find_in_range(min_pfn_mapped << PAGE_SHIFT,
+ 94                     max_pfn_mapped << PAGE_SHIFT,
+ 95                     PAGE_SIZE * num , PAGE_SIZE);
+ 96         if (!ret)
+ 97             panic("alloc_low_pages: can not alloc memory");                 
+ 98         memblock_reserve(ret, PAGE_SIZE * num);
+ 99         pfn = ret >> PAGE_SHIFT;
+100     } else {		//才开始初始化是来到这里的,brk还够用
+101         pfn = pgt_buf_end;
+102         pgt_buf_end += num;
+103         printk(KERN_DEBUG "BRK [%#010lx, %#010lx] PGTABLE\n",
+104             pfn << PAGE_SHIFT, (pgt_buf_end << PAGE_SHIFT) - 1);
+105     }
+106     
+107     for (i = 0; i < num; i++) {
+108         void *adr;
+109     
+110         adr = __va((pfn + i) << PAGE_SHIFT);
+111         clear_page(adr);
+112     }
+113     
+114     return __va(pfn << PAGE_SHIFT);
+115 }   
+
+在初始化阶段,函数还是从brk中分配出页表空间,在后来,就会从已经映射的内存中分配空间,返回分配的页地址.接下来set_pmd,来设置pgd中的项(PAE未开).
+
+
+回到kernel_physical_mapping_init
+is_kernel_text(addr)是根据addr来判断addr线性地址是否属于内核代码段.
+static inline int is_kernel_text(unsigned long addr)
+{
+	if (addr >= PAGE_OFFSET && addr <= (unsigned long)__init_end)
+		return 1;
+	return 0;
+}
+__init_end 是个内核符号,咱们很熟悉了,在内核链接的时候生成的,表示内核代码段的终止地址。如果address属于内核代码段,那么在设置页表项的时候就要加个PAGE_KERNEL_EXEC 属性,如果不是,则加个PAGE_KERNEL属性:
+#define _PAGE_KERNEL_EXEC \
+(_PAGE_PRESENT | _PAGE_RW | _PAGE_DIRTY | _PAGE_ACCESSED)
+#define _PAGE_KERNEL \
+(_PAGE_PRESENT | _PAGE_RW | _PAGE_DIRTY | _PAGE_ACCESSED |
+_PAGE_NX)
+
+映射会有两轮,在第二轮才会进行真正的PTE属性赋值
+358                 if (mapping_iter == 1) {
+359                     set_pte(pte, pfn_pte(pfn, init_prot));
+360                     last_map_addr = (pfn << PAGE_SHIFT) + PAGE_SIZE;
+361                 } else             
+362                     set_pte(pte, pfn_pte(pfn, prot));
+
+注意这里的set_pte(pte, pfn_pte(pfn, prot)),才是真正对页表项进行赋值:
+ .set_pte = native_set_pte, 
+ 27 static inline void native_set_pte(pte_t *ptep, pte_t pte)                                                                                                  
+ 28 {
+ 29     ptep->pte_high = pte.pte_high;
+ 30     smp_wmb(); 
+ 31     ptep->pte_low = pte.pte_low;
+ 32 }   
+
+pfn_pte(unsigned long page_nr, pgprot_t pgprot),宏根据页框号(计算物理地址)和页表项的属性值合并成一个页表项值
+363 static inline pte_t pfn_pte(unsigned long page_nr, pgprot_t pgprot)                                                                                        
+364 {
+365     return __pte(((phys_addr_t)page_nr << PAGE_SHIFT) |
+366              massage_pgprot(pgprot));
+367 }
+
+两轮调用结束后,就已经填充了pgd和pte,返回last_map_addr,表示已经映射的虚拟地址.
+(init_memory_mapping)
+389         ret = kernel_physical_mapping_init(mr[i].start, mr[i].end,
+390                            mr[i].page_size_mask);
+391  
+392     add_pfn_range_mapped(start >> PAGE_SHIFT, ret >> PAGE_SHIFT);
+根据返回的已映射虚拟地址,记录已映射页框信息(作用是提供内存分配??)
+
+
+
+init_mem_mapping()第二个阶段就是进行物理内存0x100000~end的映射
+587         memory_map_top_down(ISA_END_ADDRESS, end);
+本质也是调用init_memory_mapping来完成映射.
+
+回到init_mem_mapping(),接着调用early_ioremap_page_table_range_init();也是进行内存映射,功能是,固定映射FIXMAPioremap的作用是将IO和BIOS以及物理地址空间映射到在896M至1G的128M的地址空间内，使得kernel能够访问该空间并进行相应的读写操作。
+
+!!!!!!!!!!!!!!!!!固定映射的线性地址!!!!!!!!!!!!!!!!!!!
+进过上面的设置,内核线性地址第四个GB的前896MB部分映射系统的物理内存.但是至少128MB的线性地址是留作他用的,因为内核需要使用这些线性地址来实现非连续内存的分配和固定映射的线性地址.
+
+非连续内存分配仅仅是动态分配和释放内存页的一种特殊方式，将在以后博文描述。这里集中讨论固定映射的线性地址。
+Linux内核中提供了一段虚拟地址用于固定映射，也就是fixed map。
+固定映射的线性地址(fix-mapped linear address)是一个固定的线性地地址，它所对应的物理地址不是通过简单的线性转换得到的，而是人为强制指定的。每个固定的线性地址都映射到一块物理内存页。固定映射线性地址能够映射到任何一页物理内存。
+
+固定映射线性地址是从整个线性地址空间的最后4KB即线性地址0xfffff000向低地址进行分配的。在最后4KB空间与固定映射线性地址空间的顶端空留一页（未知原因），固定映射线性地址空间前面的地址空间叫做vmalloc分配的区域，他们之间也空有一页。
+
+固定映射的线性地址基本上是一种类似于0xffffc000这样的常量线性地址，其对应的物理地址不必等于线性地址减去0xc000000，而是通过页表以任意方式建立。因此，每个固定映射的线性地址都映射一个物理内存的页框.
+
+每个固定映射的线性地址都由定义于enum fixed_addresses枚举数据结构中的整型索引来表示：
+enum fixed_addresses {
+FIX_HOLE,
+FIX_VSYSCALL,
+FIX_APIC_BASE,
+FIX_IO_APIC_BASE_0,
+...
+__end_of_fixed_addresses
+};
+
+
+每个固定映射的线性地址都存放在线性地址第四个GB的末端。fix_to_virt( )函数计算从给定索引开始的常量线性地址：
+inline unsigned long fix_to_virt(const unsigned int idx)
+{
+if (idx >= _ _end_of_fixed_addresses)
+__this_fixmap_does_not_exist( );
+return (0xfffff000UL (idx << PAGE_SHIFT));
+}
+
+
+接下来就是调用load_cr3(swapper_pg_dir)设置寄存器cr3的值为全局目录的首地址.每当重新设置cr3时,CPU就会将页面映射目录所在的页面装入CPU内部高速缓存中的TLB部分。现在内存中(实际上是高速缓存中)的映射目录变了,就要再让 CPU 装入一次。由于页面映射机制本来就是开启着的,所以从这条指令以后就扩大了系统空间中有映射区域的大小,使整个映射覆盖到整个物理内存(高端内存)除外.实际上此时swapper_pg_dir中已经改变的目录项很可能还在高速缓存中,所以还要通过__flush_tlb_all()将高速缓存中的内容冲刷到内存中,这样才能保证内存中映射目录内容的一致性。
+
+在init_memory_mapping映射时,会调用add_pfn_range_mapped,将所映射页的数量值保存在max_low_pfn_mapped中.而32位x86体系中,max_pfn_mapped的值也为max_low_pfn_mapped。还记得alloc_low_pages么?其中就用到了min_pfn_mapped,max_pfn_mapped.而这两个值就会在add_pfn_range_mapped中设置.
+
+例如：让我们假定某个内核函数调用fix_to_virt(FIX_IOAPIC_BASE_0)。因为该函数声明为“inline”，所以C编译程序不调用fix_to_virt( )，而是仅仅把它的代码插入到调用函数中。此外，运行时从不对这个索引值执行检查。
+根据枚举的概念，FIX_IOAPIC_BASE_0是个等于3的常量，因此编译程序可以去掉if语句，因为它的条件在编译时为假。相反，如果条件为真，或者fix_to_virt( )的参数不是一个常量，则编译程序在连接阶段产生一个错误，因为符号__this_fixmap_does_not_exist 在别处没有定义。
+最后， 编译程序计算0xfffff000(3<<PAGE_SHIFT)，即用0xfffff000-倒数第四个页面，我们来减一减：e、d、c，最后得到常量线性地址0xffffc000作为函数fix_to_virt( )的返回值。
+
+那么，有了这个固定映射的线性地址后，如何把一个物理地址与固定映射的线性地址关联起来呢， 内核使用set_fixmap(idx, phys) 和set_fixmap_nocache(idx, phys)宏。这两个函数都把fix_to_virt(idx)线性地址对应的一个页表项初始化为物理地址phys（注意，页目录地址仍然在swapper_pg_dir中，这里只需要设置页表项）；不过，第二个函数也把页表项的PCD标志置位，因此，当访问这个页框中的数据时禁用硬件高速缓存反过来，clear_fixmap(idx)用来撤消固定映射线性地址idx和物理地址之间的连接。
+
+这个固定地址映射到底拿来做什么用呢？一般用来代替一些经常用到的指针。我们想想，就指针变量而言，固定映射的线性地址更有效。事实上，间接引用一个指针变量比间接引用一个立即常量地址要多一次内存访问。比如，我们设置一个FIX_APIC_BASE指针，其所指对象之间存在于对应的物理内存中，我们通过set_fixmap和clear_fixmap建立好二者的关系以后，就可以直接寻址了，没有必要像指针那样再去间接一次寻址。
+
+此外，在间接引用一个指针变量之前对其值进行检查是一个良好的编程习惯；相反，对一个常量线性地址的检查则是没有必要的
+
+
+
+回到setup_arch中,会调用initmem_init(); 来启用初始化阶段的内存管理器.而这个函数在两个文件中有定义,arch/x86/mm/init_32.c 和 arch/x86/mm/numa_32.c.取决于是否启动了编译选项 CONFIG_NEED_MULTIPLE_NODES。这个编译选项是什么意思?这得从 NUMA 说起。NUMA 翻译成中文就叫“非对称内存访问体系”,其目的是为多 CPU,或大型计算机集群提供一个分布式内存访问环境,而每一个分布式节点就叫做 NODE。我们单机系统通常是 UMA,即“对称内存访问体系”,其实就是只有一个 NODE 的环境。
+
+
+而每个 NODE 下物理内存分成几个 Zone(区域),Zone 再对物理页面进行管理。所以,不管是我 们的PC,还是大型集群服务器,只要安装了Linux操作系统,就是一个NODE->Zone->Page 这样一个三层物理内存管理体系。
+
+Linux2.6开始把每个内存节点的物理内存划分成3个管理区（zone）。在80x86的UMA体系结构中的管理区分为：
+ZONE_DMA：包含低于16MB的内存页框
+ZONE_NORMAL：包含高于16MB而低于896MB的内存页框
+ZONE_HIGHMEM：包含从896MB开始高于896MB的内存页框
+
+ZONE_DMA和ZONE_NORMAL区包含内存“常规”页框，通过把他们线性地址映射到线性地址空间的第4个GB，内核就可以直接进行访问。 ZONE_HIGHMEM区包含的内存页不能由内核直接访问，尽管它们也可以通过高端内存内核映射，线性映射到线性地址空间的第4个GB。
+
+
+
+分析initmem_init()我们仅关注没有定义CONFIG_NEED_MULTIPLE_NODES的情况,即只有一个NODE.这个函数主要是初始化一个early_node_map[MAX_ACTIVE_REGIONS]的数组和一个全局变量nr_nodemap_entries,MAX_ACTIVE_REGIONS本来代表 NUMA 活动节点的,但是没有配置的情况下就为256.
+
+static struct node_active_region __meminitdata early_node_map[MAX_ACTIVE_REGIONS];
+
+struct node_active_region {
+unsigned long start_pfn;--------->页框起始号
+unsigned long end_pfn;	--------->页框结束号
+int nid;		--------->NUMA 节点号
+};
+
+初始化完成后,early_node_map[]中就存了e820.nr_map个元素,每个元素记录了每个可用 e820 RAM 的起始地址和结束地址对应的页框号,nid都为0.全局变量nr_nodemap_entries 的值最后也变成了 e820 RAM 可用内存区的总数 e820.nr_map.::
+
+接着initmem_init()调用setup_bootmem_allocator()来初始化来设置引导启动阶段所涉及到的页映射位,现在一般都会设置CONFIG_NO_BOOTMEM,所以这个函数也是什么都不干,仅仅打印几个信息并把全局变量 after_init_bootmem 设置为 1。
+
+BOOTMEM内存分配体系已经被弃用,取而代之的是__alloc_memory_core_early函数,在以后会分析.
+!!maxwellxxx  http://blog.csdn.net/cha_echo/article/details/5597937  BOOTMEM内存分配体系
+
+
+回到setup_arch()
+1177     x86_init.paging.pagetable_init();    开始页面初始化.
+
+(arch/x86/kernel/x86_init.c)
+ 37 struct x86_init_ops x86_init __initdata = {
+ 38     
+ 39     .resources = {
+ 40         .probe_roms     = probe_roms,
+ 41         .reserve_resources  = reserve_standard_io_resources,
+ 42         .memory_setup       = default_machine_specific_memory_setup,
+ 43     },
+ 44     
+...
+ 65     
+ 66     .paging = {
+ 67         .pagetable_init     = native_pagetable_init,
+ 68     },
+ 69     
+...
+可以看到是调用了native_pagetable_init(arch/x86/mm/init_32.c)
+452 void __init native_pagetable_init(void)
+453 {  
+454     unsigned long pfn, va;
+455     pgd_t *pgd, *base = swapper_pg_dir;
+456     pud_t *pud;
+457     pmd_t *pmd;
+458     pte_t *pte;
+459    
+460     /*
+461      * Remove any mappings which extend past the end of physical
+462      * memory from the boot time page table.
+463      * In virtual address space, we should have at least two pages
+464      * from VMALLOC_END to pkmap or fixmap according to VMALLOC_END
+465      * definition. And max_low_pfn is set to VMALLOC_END physical
+466      * address. If initial memory mapping is doing right job, we
+467      * should have pte used near max_low_pfn or one pmd is not present.
+468      */
+469     for (pfn = max_low_pfn; pfn < 1<<(32-PAGE_SHIFT); pfn++) {
+470         va = PAGE_OFFSET + (pfn<<PAGE_SHIFT);
+471         pgd = base + pgd_index(va);
+472         if (!pgd_present(*pgd))
+473             break;
+474    
+475         pud = pud_offset(pgd, va);
+476         pmd = pmd_offset(pud, va);
+477         if (!pmd_present(*pmd))
+478             break;
+479    
+480         /* should not be large page here */
+481         if (pmd_large(*pmd)) {
+482             pr_warn("try to clear pte for ram above max_low_pfn: pfn: %lx pmd: %p pmd phys: %lx, but pmd is big page and is not using pte !\n",
+483                 pfn, pmd, __pa(pmd));
+484             BUG_ON(1);
+485         }
+486    
+487         pte = pte_offset_kernel(pmd, va);
+488         if (!pte_present(*pte))
+489             break;
+490    
+491         printk(KERN_DEBUG "clearing pte for ram above max_low_pfn: pfn: %lx pmd: %p pmd phys: %lx pte: %p pte phys: %lx\n",
+492                 pfn, pmd, __pa(pmd), pte, __pa(pte));
+493         pte_clear(NULL, va, pte);
+494     }
+495     paravirt_alloc_pmd(&init_mm, __pa(base) >> PAGE_SHIFT);
+496     paging_init();
+497 }
+
+函数开始是清理超出max_low_pfn页框的(超出物理内存的)内存映射pte,实际调用的是paging_init().
+
+697 void __init paging_init(void)              
+698 {
+699     pagetable_init();	//初始化全局目录的目录项
+700  
+701     __flush_tlb_all();
+702  
+703     kmap_init();
+704  
+705     /*
+706      * NOTE: at this point the bootmem allocator is fully available.
+707      */
+708     olpc_dt_build_devicetree();
+709     sparse_memory_present_with_active_regions(MAX_NUMNODES);
+710     sparse_init();
+711     zone_sizes_init();
+712 }
+
+首先是pagetable_init(),初始化全局目录的目录项
+
+533 static void __init pagetable_init(void)
+534 {      
+535     pgd_t *pgd_base = swapper_pg_dir;
+536        
+537     permanent_kmaps_init(pgd_base);		//高端内存映射相关
+538 } 
+如果 CONFIG_HIGHMEM 被配置(当前大多数计算机都会配置的),permanent_kmaps_init则不是空函数,把全局目录swapper_pg_dir地址给他,该函数调用page_table_range_init 设置目录项。
+411 #ifdef CONFIG_HIGHMEM
+412 static void __init permanent_kmaps_init(pgd_t *pgd_base)                                                                                                   
+413 {       
+414     unsigned long vaddr;
+415     pgd_t *pgd;
+416     pud_t *pud;
+417     pmd_t *pmd;
+418     pte_t *pte;
+419  
+420     vaddr = PKMAP_BASE;
+421     page_table_range_init(vaddr, vaddr + PAGE_SIZE*LAST_PKMAP, pgd_base);
+422  
+423     pgd = swapper_pg_dir + pgd_index(vaddr);
+424     pud = pud_offset(pgd, vaddr);
+425     pmd = pmd_offset(pud, vaddr);
+426     pte = pte_offset_kernel(pmd, vaddr);
+427     pkmap_page_table = pte;
+428 }
+
+这里看到的PKMAP_BASE,pkmap_page_table都是为高端内存映射的永久内存映射服务的.
+
+200  *                                                                                                                                                         
+201  * NOTE: The pagetables are allocated contiguous on the physical space
+202  * so we can cache the place of the first one and move around without
+203  * checking the pgd every time.
+204  */
+205 static void __init
+206 page_table_range_init(unsigned long start, unsigned long end, pgd_t *pgd_base)
+207 {
+208     int pgd_idx, pmd_idx;
+209     unsigned long vaddr;
+210     pgd_t *pgd;
+211     pmd_t *pmd;
+212     pte_t *pte = NULL;
+213     unsigned long count = page_table_range_init_count(start, end);
+214     void *adr = NULL;
+215    
+216     if (count)
+217         adr = alloc_low_pages(count);
+218    
+219     vaddr = start;
+220     pgd_idx = pgd_index(vaddr);
+221     pmd_idx = pmd_index(vaddr);
+222     pgd = pgd_base + pgd_idx;
+223    
+224     for ( ; (pgd_idx < PTRS_PER_PGD) && (vaddr != end); pgd++, pgd_idx++) {
+225         pmd = one_md_table_init(pgd);
+226         pmd = pmd + pmd_index(vaddr);
+227         for (; (pmd_idx < PTRS_PER_PMD) && (vaddr != end);
+228                             pmd++, pmd_idx++) {
+229             pte = page_table_kmap_check(one_page_table_init(pmd),
+230                             pmd, vaddr, pte, &adr);
+231    
+232             vaddr += PMD_SIZE;
+233         }
+234         pmd_idx = 0;
+235     }
+236 }  
+
+!!!!!!!!!!!!高端内存映射!!!!!!!!!!!!!!!!
+
+我们在前面分析过了，在linux内存管理中，内核使用3G-4G的线性地址空间，总共1G的大小。其中80x86中，内核页表的896M大小的线性地址与物理地址一一对应，而剩余128MB的线性地址留作他用（实现非连续内存分配 和固定映射的线性地址 ）。通常，我们把物理地址 超过896M的区域称为高端内存。内核怎样去管理高端内存呢？今天就来分析这个问题。
+
+内核有三种方式管理高端内存:
+第一种是非连续映射。这里我们只简单提一下，在vmalloc中请求页面的时候，如果请求的是高端内存，则映射到VMALLOC_START与VMALLOC_END之间。(用于映射非线性的段(也就是不连续的段)).
+第二种方式是永久内核映射。
+最后一种方式叫临时内核映射。
+可以看出,固定内存映射也属于高端内存映射的范畴.固定映射空间中，有一部分用于高端内存的临时映射。
+
+
+这里详细讲第二第三种方法.
+内核中有一个全局变量，叫做high_memory，它被设置为0x38000000，也就是896MB。896MB边界以上的空间（未启动PAE的32位80x86的地址范围3GB+128MB）并不映射在内核线性地址空间的第4个GB，因此，内核不能直接访问它们。这就意味着，返回所分配页框线性地址的页分配函数，即__get_free_pages(GFP_HIGHMEM, 0)类似的函数，不适用于高端内存，即不适用于ZONE_HIGHMEM内存管理区中的页。
+
+高端内存页框的分配只能通过alloc_pages()函数和它的快捷函数alloc_page()。这些函数不返回第一个被分配页框的线性地址，因为如果该页框属于高端内存，那么这样的线性地址根本不存在。取而代之的是：这些函数返回第一个被分配页框的页描述符的线性地址。这些线性地址总是存在的，因为所有页描述符一旦被分配，则必在低端内存中。它们在内核初始化阶段就以被分配，且始终不会改变。
+
+别高兴，虽然可以利用alloc_pages()函数在高端区分配一个页，但是这个页没有线性地址，不能被内核访问。因此，内核线性地址空间最后128MB中的一部分专门用于映射高端内存页框。当然，这种映射是暂时的，否则只有128MB的高端内存可以被访问。取而代之的是：通过重复使用线性地址，使得整个高端内存能够在不同的时间被访问。
+
+!!!!永久内核映射!!!!
+永久内核映射允许内核建立高端页框到内核地址空间的长期映射。它们只使用主内核页表中一个专门的页表（注意，只有一个页表） ，其地址存放在pkmap_page_table变量中。页表中的表项数由LAST_PKMAP宏产生。页表照样包含512或1024项，这取决于PAE是否被激活；因此内核一次最多只能访问2MB或4MB固定内存映射的高端内存。也就是说，这个空间是 4M 或 2M 大小，因此仅仅需要一个页表即可，内核通过来 pkmap_page_table 寻找这个页表。
+
+该页表映射的线性地址从PKMAP_BASE（注意，这些都是一些宏）开始。pkmap_count数组包含LAST_PKMAP个计数器，pkmap_page_table 页表中的每一项都有一个。我们区分以下三种情况：
+
+计数器为0：对应的页表项没有映射任何高端内存页框，并且是可用的。
+计数器为1：对应的页表项没有映射任何高端内存页框，但是它不能使用，因为自从它最后一次使用以来，其相应的TLB表现还未被刷新。
+计数器为n（远大于1）：相应的页表项映射一个高端内存页框，这意味着正好有n-1个内核成分在使用这个页框。
+
+
+为了记录高端内存页框与永久内核映射包含的线性地址之间的联系，内核使用了page_address_htable散列表。该表包含一个page_address_map数据结构，用于为高端内存中的每一个页框进行当前映射。而该数据结构还包含一个指向页描述符的指针和分配给该页框的线性地址。
+
+page_address()函数返回页框对应的线性地址，如果页框在高端内存中并且没有被映射，则返回NULL。这个函数接受一个页描述符指针page作为其参数，并区分以下两种情况：
+1.如果页框不在高端内存中（PG_highmem标志为0），则线性地址总是存在并且是通过计算页框下标，然后将其转换成物理地址，最后根据相应的物理地址得到线性地址。这是由下面的代码完成的：__va((unsigned long)(page - mem_map) << 12)
+2.如果页框在高端内存（PG_highmem标志为1）中，该函数就到page_address_htable散列表中查找。如果在散列表中找到页框，page_address()就返回它的线性地址，否则返回NULL。
+
+kmap()函数建立永久内核映射。本质上它等价于下列代码：
+void * kmap(struct page * page)
+{
+    if (!PageHighMem(page))
+        return page_address(page);
+    return kmap_high(page);
+}
+
+如果页框确实属于高端内存，则调用kmap_high()函数。这个函数本质上等价于下列代码：
+void * kmap_high(struct page * page)
+{
+    unsigned long vaddr;
+    spin_lock(&kmap_lock);
+    vaddr = (unsigned long) page_address(page);
+    if (!vaddr)
+        vaddr = map_new_virtual(page);
+    pkmap_count[(vaddr-PKMAP_BASE) >> PAGE_SHIFT]++;
+    spin_unlock(&kmap_lock);
+    return (void *) vaddr;
+}
+
+该函数获取kmap_lock自旋锁，以保护页表免受多处理器系统上的并发访问。接下来，kmap_high()函数检查页框是否已经通过调用page_address()被映射。如果不是，该函数调用map_new_virtual()函数把页框的物理地址插入到pkmap_page_table 的一个项中并在page_address_htable散列表中加入一个元素。然后，kmap_high()使页框的线性地址所对应的计数器加1 来将调用该函数的新内核成分考虑在内。最后，kmap_high()释放kmap_lock自旋锁并返回对该页框进行映射的线性地址。
+map_new_virtual()函数本质上执行两个嵌套循环：
+    for (;;) {
+        int count;
+        DECLARE_WAITQUEUE(wait, current);
+        for (count = LAST_PKMAP; count > 0; --count) {
+            last_pkmap_nr = (last_pkmap_nr + 1) & (LAST_PKMAP - 1);
+            if (!last_pkmap_nr) {
+                flush_all_zero_pkmaps( );
+                count = LAST_PKMAP;
+            }
+            if (!pkmap_count[last_pkmap_nr]) {
+                unsigned long vaddr = PKMAP_BASE +
+                                      (last_pkmap_nr << PAGE_SHIFT);
+                set_pte(&(pkmap_page_table[last_pkmap_nr]),
+                        mk_pte(page, _ _pgprot(0x63)));
+                pkmap_count[last_pkmap_nr] = 1;
+                set_page_address(page, (void *) vaddr);
+                return vaddr;
+            }
+        }
+        current->state = TASK_UNINTERRUPTIBLE;
+        add_wait_queue(&pkmap_map_wait, &wait);
+        spin_unlock(&kmap_lock);
+        schedule( );
+        remove_wait_queue(&pkmap_map_wait, &wait);
+        spin_lock(&kmap_lock);
+        if (page_address(page))
+            return (unsigned long) page_address(page);
+    }
+在内循环中，该函数扫描pkmap_count 中的所有计数器直到找到一个空值。当在pkmap_count中找到了一个未使用的项时，大的if代码块运行。这段代码确定该项对应的线性地址，为它在pkmap_page_table页表中创建一个项，将count置1，因为该项现在已经被使用了，调用set_page_address()函数插入一个新元素到page_address_htable散列表中，并返回线性地址。
+
+函数从上次停止的地方开始，穿越pkmap_count 数组执行循环。这是函数通过将pkmap_page_table页表中上次使用过页表项的索引保存在一个名为last_pkmap_nr的变量中做到的。因此，搜索从上次因调用map_new_virtual()函数而跳出的地方重新开始。
+
+当在pkmap_count中搜索到最后一个计数器时，就又从下标为0 的计数器重新开始搜索。不过，在继续之前，map_new_virtual()调用flush_all_zero_pkmaps()函数来开始寻找计数器为1 的另一趟扫描。每个值为1的计数器都表示在pkmap_page_table页表中表项是空闲的，但不能使用，因为相应的TLB 表项还没有被刷新。flush_all_zero_pkmaps()把它们的计数器重置为0，删除page_address_htable 散列表中对应的元素，并在pkmap_page_table的所有项上进行TLB 刷新。
+
+如果内循环在pkmap_count中没有找到空的计数器，map_new_virtual()函数就阻塞当前进程，直到某个进程释放了pkmap_page_table 页表中的一个表项。通过把current 插入到pkmap_map_wait等待队列，把current状态设置为 TASK_UNINTERRUPTIBLE并调用schedule()放弃CPU来达到此目的。一旦进程被唤醒，该函数就通过调用page_address()检查是否存在另一个进程已经映射了该页；如果还没有其他进程映射该页，则内循环重新开始。
+
+kunmap()函数撤销先前由kmap()建立的永久内核映射。如果页确实在高端内存中，则调用kunmap_high()函数，它本质上等价于下列代码：
+void kunmap_high(struct page * page)
+{
+    spin_lock(&kmap_lock);
+    if ((--pkmap_count[((unsigned long)page_address(page)
+                        -PKMAP_BASE)>>PAGE_SHIFT]) == 1)
+        if (waitqueue_active(&pkmap_map_wait))
+            wake_up(&pkmap_map_wait);
+    spin_unlock(&kmap_lock);
+}
+
+中括号内的表达式从页的线性地址计算出pkmap_count数组的索引。计数器被减1 并与1 相比。匹配成功表明没有进程在使用页。该函数最终能唤醒由map_new_virtual()添加在等待队列中的进程（如果有的话）。
+
+好了，我们来总结一下，如果是通过 alloc_page() 获得了高端内存对应的 page，如何给它找个线性空间？
+内核专门为此留出一块线性空间，从 PKMAP_BASE 到 FIXADDR_START ，用于映射高端内存。在 2.6 内核上，如果不指定PAE，这个地址范围是 4G-8M 到 4G-4M 之间。这个空间起叫“内核永久映射空间”或者“永久内核映射空间”
+这个空间和其它空间使用同样的页全局目录表，对于内核来说，就是 swapper_pg_dir，对普通进程来说，通过 CR3寄存器指向。
+通常情况下，这个空间是 4M 大小，因此仅仅需要一个页表即可，内核通过来 pkmap_page_table 寻找这个页表。
+通过 kmap()， 可以把一个 page 映射到这个空间来.
+由于这个空间是 4M 大小，最多能同时映射 1024 个 page。因此，对于不使用的的 page，及应该时从这个空间释放掉（也就是解除映射关系），通过 kunmap() ，可以把一个 page 对应的线性地址从这个空间释放出来.
+
+
+
+!!!!!!!!!!临时内核映射!!!!!!!!!!!!
+临时内核映射比永久内核映射的实现要简单。在高端内存的任一页框都可以通过一个“窗口”（为此而保留的一个页表项）映射到内核地址空间。留给临时内核映射的窗口数是非常少的。
+每个CPU都有它自己的包含13个窗口的集合，它们用enum km_type数据结构表示。该数据结构中定义的每个符号，如KM_BOUNCE_READ、KM_USER0 或KM_PTE0，标识了窗口的线性地址。
+
+内核必须确保同一窗口永不会被两个不同的控制路径同时使用。因此，km_type结构中的每个符号只能由一种内核成分使用，并以该成分命名。最后一个符号KM_TYPE_NR 本身并不表示一个线性地址，但由每个CPU 用来产生不同的可用窗口数。
+
+在km_type中的每个符号（除了最后一个）都是固定映射的线性地址的一个下标（见“固定映射的线性地址”博文）。
+
+enum_fixed_addresses 数据结构包含符号FIX_KMAP_BEGIN 和FIX_KMAP_END；把后者赋给下标FIX_KMAP_BEGIN+(KM_TYPE_NR*NR_CPUS)-1。在这种方式下，系统中的每个CPU 都有KM_TYPE_NR个固定映射的线性地址。此外，内核用fix_to_virt(FIX_KMAP_BEGIN)线性地址对应的页表项的地址初始化kmap_pte变量。
+
+为了建立临时内核映射，内核调用kmap_atomic()函数，它本质上等价于下列代码：
+void * kmap_atomic(struct page * page, enum km_type type)
+{
+    enum fixed_addresses idx;
+    unsigned long vaddr;
+
+    current_thread_info( )->preempt_count++;
+    if (!PageHighMem(page))
+        return page_address(page);
+    idx = type + KM_TYPE_NR * smp_processor_id( );
+    vaddr = fix_to_virt(FIX_KMAP_BEGIN + idx);
+    set_pte(kmap_pte-idx, mk_pte(page, 0x063));		
+    _ _flush_tlb_single(vaddr);
+    return (void *) vaddr;
+}
+
+type 参数和CPU 标识符（通过smp_processor_id()）指定必须用哪个固定映射的线性地址映射请求页。如果页框不属于高端内存，则该函数返回页框的线性地址；否则，用页的物理地址及Present、Accessed、Read/Write 和Dirty 位建立该固定映射的线性地址对应的页表项。最后，该函数刷新适当的TLB 项并返回线性地址。
+
+为了撤销临时内核映射，内核使用kunmap_atomic()函数。在80x86 结构中，这个函数减少当前进程的preempt_count；因此，如果在请求临时内核映像之前能抢占内核控制路径，那么在同一个映射被撤销后可以再次抢占。此外，kunmap_atomic()检查当前进程的TIF_NEED_RESCHED 标志是否被置位，如果是，就调用schedule()。
+
+好了，现在我们来总结一下临时内核映射。前边提到从线性地址4G向前倒数若干的页面有一个空间称为“固定映射空间”，在这个空间中，有一部分用于高端内存的临时映射。
+这块空间具有如下特点：
+1、每个 CPU 占用一块空间
+2、在每个 CPU 占用的那块空间中，又分为多个小空间，每个小空间大小是 1 个 page，每个小空间用于一个目的，这些目的定义在kmap_types.h 中的 km_type 中。
+当要进行一次临时映射的时候，需要指定映射的目的，根据映射目的，可以找到对应的小空间，然后把这个空间的地址作为映射地址。这意味着一次临时映射会导致以前的映射被覆盖。
+通过 kmap_atomic() 可实现临时映射。
+
+回到paging_init(void) 
+kmap_init();对kmap第一个页表项进行缓存.
+kmap/unkmap系统调用是用来映射高端物理内存页到内核地址空间的api函数，他们分配的内核虚拟地址范围属于[PKMAP_BASE，PAGE_OFFSET]即[0xbfe00000，0xc0000000]范围.
+而kmap_atomic是用来建立临时内存映射的,固定映射空间中，有一部分用于高端内存的临时映射。
+那么kmap的作用就显而易见了.内核用fix_to_virt(FIX_KMAP_BEGIN)线性地址对应的页表项的地址初始化kmap_pte变量并且缓存.可见这个页表是用来建立临时内存映射的.
+
+398 static void __init kmap_init(void)                                                                                                                         
+399 {     
+400     unsigned long kmap_vstart;
+401       
+402     /*
+403      * Cache the first kmap pte:
+404      */
+405     kmap_vstart = __fix_to_virt(FIX_KMAP_BEGIN);
+406     kmap_pte = kmap_get_fixmap_pte(kmap_vstart);
+407  
+408     kmap_prot = PAGE_KERNEL;
+409 }  
+
+回到paging_init(void) :710     sparse_init(); 是用来映射非线性的段(也就是不连续的段)。 
+
+519 /*
+520  * Allocate the accumulated non-linear sections, allocate a mem_map
+521  * for each and record the physical to section mapping.
+522  */
+523 void __init sparse_init(void)
+524 {
+525     unsigned long pnum;
+526     struct page *map;
+527     unsigned long *usemap;
+528     unsigned long **usemap_map;
+529     int size;
+530 #ifdef CONFIG_SPARSEMEM_ALLOC_MEM_MAP_TOGETHER
+531     int size2;
+532     struct page **map_map;
+533 #endif
+534    
+535     /* see include/linux/mmzone.h 'struct mem_section' definition */
+536     BUILD_BUG_ON(!is_power_of_2(sizeof(struct mem_section)));
+537    
+538     /* Setup pageblock_order for HUGETLB_PAGE_SIZE_VARIABLE */
+539     set_pageblock_order();
+540    
+541     /*
+542      * map is using big page (aka 2M in x86 64 bit)
+543      * usemap is less one page (aka 24 bytes)
+544      * so alloc 2M (with 2M align) and 24 bytes in turn will
+545      * make next 2M slip to one more 2M later.
+546      * then in big system, the memory will have a lot of holes...
+547      * here try to allocate 2M pages continuously.
+548      *
+549      * powerpc need to call sparse_init_one_section right after each
+550      * sparse_early_mem_map_alloc, so allocate usemap_map at first.
+551      */
+552     size = sizeof(unsigned long *) * NR_MEM_SECTIONS;
+553     usemap_map = memblock_virt_alloc(size, 0);
+554     if (!usemap_map)
+555         panic("can not allocate usemap_map\n");
+556     alloc_usemap_and_memmap(sparse_early_usemaps_alloc_node,
+557                             (void *)usemap_map);
+558    
+559 #ifdef CONFIG_SPARSEMEM_ALLOC_MEM_MAP_TOGETHER
+560     size2 = sizeof(struct page *) * NR_MEM_SECTIONS;
+561     map_map = memblock_virt_alloc(size2, 0);
+562     if (!map_map)
+563         panic("can not allocate map_map\n");
+564     alloc_usemap_and_memmap(sparse_early_mem_maps_alloc_node,
+565                             (void *)map_map);
+566 #endif
+567    
+568     for (pnum = 0; pnum < NR_MEM_SECTIONS; pnum++) {
+569         if (!present_section_nr(pnum))
+570             continue;
+571    
+572         usemap = usemap_map[pnum];
+573         if (!usemap)
+574             continue;
+575     
+576 #ifdef CONFIG_SPARSEMEM_ALLOC_MEM_MAP_TOGETHER
+577         map = map_map[pnum];
+578 #else
+579         map = sparse_early_mem_map_alloc(pnum);
+580 #endif
+581         if (!map)
+582             continue;
+583     
+584         sparse_init_one_section(__nr_to_section(pnum), pnum, map,
+585                                 usemap);
+586     }
+587     
+588     vmemmap_populate_print_last();
+589     
+590 #ifdef CONFIG_SPARSEMEM_ALLOC_MEM_MAP_TOGETHER
+591     memblock_free_early(__pa(map_map), size2);
+592 #endif
+593     memblock_free_early(__pa(usemap_map), size);
+594 }   
+
+!!!!非连续内存映射!!!!!!http://blog.csdn.net/yunsongice/article/details/5536197   maxwellxxx
+Linux 在几个方面使用非连续内存区：为活动的交换区分配数据结构，为模块分配空间，或者给某些I/O 驱动程序分配缓冲区等。此外，非连续内存区还提供了另一种使用高端内存页框的方法(非连续内存映射也是高端内存管理的一种方式.)
+
+
+回到paging_init(void):711     zone_sizes_init();
+最后调用zone_sizes_init()
+696 void __init zone_sizes_init(void)
+697 {  
+698     unsigned long max_zone_pfns[MAX_NR_ZONES];
+699    
+700     memset(max_zone_pfns, 0, sizeof(max_zone_pfns));
+701    
+702 #ifdef CONFIG_ZONE_DMA
+703     max_zone_pfns[ZONE_DMA]     = min(MAX_DMA_PFN, max_low_pfn);
+704 #endif
+705 #ifdef CONFIG_ZONE_DMA32
+706     max_zone_pfns[ZONE_DMA32]   = min(MAX_DMA32_PFN, max_low_pfn);
+707 #endif
+708     max_zone_pfns[ZONE_NORMAL]  = max_low_pfn;
+709 #ifdef CONFIG_HIGHMEM
+710     max_zone_pfns[ZONE_HIGHMEM] = max_pfn;
+711 #endif
+712    
+713     free_area_init_nodes(max_zone_pfns);
+714 }  
+
+这里设置了一个局部数组max_zone_pfns,其中只有三个元素:ZONE_DMA,ZONE_NORMAL,ZONE_HIGHMEM分别表示了一个NODE的三个Zone,元素的的具体值就是每个Zone理论上能使用的页框最大数.最后的 free_area_init_nodes(max_zone_pfns);来实现节点空闲区域的初始化,函数很复杂,本质上等于:
+
+5386 void __init free_area_init_nodes(unsigned long *max_zone_pfn)
+5387 { 
+.....
+.....
+5446     for_each_online_node(nid) {
+5447         pg_data_t *pgdat = NODE_DATA(nid);
+5448         free_area_init_node(nid, NULL,
+5449                 find_min_pfn_for_node(nid), NULL);
+5450     
+5451         /* Any memory on that node */
+5452         if (pgdat->node_present_pages)
+5453             node_set_state(nid, N_MEMORY);
+5454         check_for_memory(pgdat, nid);
+5455     }
+for_each_online_node是:
+510 #define for_each_online_node(node) for_each_node_state(node, N_ONLINE)  
+429 #define for_each_node_state(__node, __state) \                                    
+430     for_each_node_mask((__node), node_states[__state])
+  
+370 #define for_each_node_mask(node, mask)          \                                   
+371     for ((node) = first_node(mask);         \
+372         (node) < MAX_NUMNODES;          \
+373         (node) = next_node((node), (mask)))
+
+
+245 #define first_node(src) __first_node(&(src))            
+246 static inline int __first_node(const nodemask_t *srcp)
+247 {
+248     return min_t(int, MAX_NUMNODES, find_first_bit(srcp->bits, MAX_NUMNODES));
+249 }
+250  
+251 #define next_node(n, src) __next_node((n), &(src))
+252 static inline int __next_node(int n, const nodemask_t *srcp)
+253 {
+254     return min_t(int,MAX_NUMNODES,find_next_bit(srcp->bits, MAX_NUMNODES, n+1));
+255 }
+
+我们假设只有一个节点,所以循环只循环一次,这里有个奇怪的NODE_DATA(nid),这个nid我们知道,是0。
+ 11 #ifdef CONFIG_NUMA
+ 12 extern struct pglist_data *node_data[];
+ 13 #define NODE_DATA(nid)  (node_data[nid]) 
+ 14 #endif /* CONFIG_NUMA */
+
+来了,最著名的pglist_data出现了:
+ 719 typedef struct pglist_data {
+ 720     struct zone node_zones[MAX_NR_ZONES];
+ 721     struct zonelist node_zonelists[MAX_ZONELISTS];
+ 722     int nr_zones;
+ 723 #ifdef CONFIG_FLAT_NODE_MEM_MAP /* means !SPARSEMEM */
+ 724     struct page *node_mem_map;
+ 725 #ifdef CONFIG_PAGE_EXTENSION
+ 726     struct page_ext *node_page_ext;
+ 727 #endif
+ 728 #endif
+ 729 #ifndef CONFIG_NO_BOOTMEM
+ 730     struct bootmem_data *bdata;
+ 731 #endif
+ 732 #ifdef CONFIG_MEMORY_HOTPLUG
+ 733     /*
+ 734      * Must be held any time you expect node_start_pfn, node_present_pages
+ 735      * or node_spanned_pages stay constant.  Holding this will also
+ 736      * guarantee that any pfn_valid() stays that way.
+ 737      *
+ 738      * pgdat_resize_lock() and pgdat_resize_unlock() are provided to
+ 739      * manipulate node_size_lock without checking for CONFIG_MEMORY_HOTPLUG.
+ 740      *
+ 741      * Nests above zone->lock and zone->span_seqlock
+ 742      */
+ 743     spinlock_t node_size_lock;
+ 744 #endif
+ 745     unsigned long node_start_pfn;
+ 746     unsigned long node_present_pages; /* total number of physical pages */
+ 747     unsigned long node_spanned_pages; /* total size of physical page
+ 748                          range, including holes */
+ 749     int node_id;
+ 750     wait_queue_head_t kswapd_wait;
+ 751     wait_queue_head_t pfmemalloc_wait;
+ 752     struct task_struct *kswapd; /* Protected by
+ 753                        mem_hotplug_begin/end() */
+ 754     int kswapd_max_order;
+ 755     enum zone_type classzone_idx;
+ 756 #ifdef CONFIG_NUMA_BALANCING
+ 757     /* Lock serializing the migrate rate limiting window */
+ 758     spinlock_t numabalancing_migrate_lock;
+ 759    
+ 760     /* Rate limiting time interval */
+ 761     unsigned long numabalancing_migrate_next_window;
+ 762    
+ 763     /* Number of pages migrated during the rate limiting time interval */
+ 764     unsigned long numabalancing_migrate_nr_pages;
+ 765 #endif
+ 766 } pg_data_t;
+这个结构是每个NUMA节点一个,那么我PC上唯一的0号NODE就是NODE_DATA(0),也就是全局数组 node_data[]的0号元素。
+
+接下来看 free_area_init_node(nid,NULL,find_min_pfn_for_node(nid), NULL);
+
+5036 void __paginginit free_area_init_node(int nid, unsigned long *zones_size,
+5037         unsigned long node_start_pfn, unsigned long *zholes_size)
+5038 {   
+5039     pg_data_t *pgdat = NODE_DATA(nid);
+5040     unsigned long start_pfn = 0;
+5041     unsigned long end_pfn = 0;
+5042     
+5043     /* pg_data_t should be reset to zero when it's allocated */
+5044     WARN_ON(pgdat->nr_zones || pgdat->classzone_idx);
+5045     
+5046     pgdat->node_id = nid;
+5047     pgdat->node_start_pfn = node_start_pfn;
+......
+5053     calculate_node_totalpages(pgdat, start_pfn, end_pfn,
+5054                   zones_size, zholes_size);
+5055     
+5056     alloc_node_mem_map(pgdat);
+5057 #ifdef CONFIG_FLAT_NODE_MEM_MAP
+5058     printk(KERN_DEBUG "free_area_init_node: node %d, pgdat %08lx, node_mem_map %08lx\n",
+5059         nid, (unsigned long)pgdat,
+5060         (unsigned long)pgdat->node_mem_map);
+5061 #endif
+5062     
+5063     free_area_init_core(pgdat, start_pfn, end_pfn,
+5064                 zones_size, zholes_size);
+5065 }   
+
+传递给他的参数作为整个pg_data_t的第一个页号,由函数find_min_pfn_for_node(0)计算出:
+5134 /* Find the lowest pfn for a node */
+5135 static unsigned long __init find_min_pfn_for_node(int nid) 
+5136 {
+5137     unsigned long min_pfn = ULONG_MAX;	//ULONG_MAX=0XFFFFFFFF
+5138     unsigned long start_pfn;
+5139     int i; 
+5140     
+5141     for_each_mem_pfn_range(i, nid, &start_pfn, NULL, NULL)
+5142         min_pfn = min(min_pfn, start_pfn);
+5143                      
+5144     if (min_pfn == ULONG_MAX) {
+5145         printk(KERN_WARNING
+5146             "Could not find start_pfn for node %d\n", nid);
+5147         return 0; 
+5148     }
+5149     
+5150     return min_pfn;
+5151 }   
+函数很简单,其实就是从early_node_map[]中找到一个空闲的页面的页号.换句话说,就是返回early_node_map[]数组中,start_pfn 最小的那个元素的值。5039的pgdat我们已经知道是啥了,然后就是初始化它的两个字段:NUMA节点号和第一个Zone的第一个页框号.
+
+接下来计算pgdat的所有Zone的总共页面数和可用页面数,针对x86体系,MAX_NR_ZONES=3
+4763 static void __meminit calculate_node_totalpages(struct pglist_data *pgdat,      
+4764                         unsigned long node_start_pfn,
+4765                         unsigned long node_end_pfn,
+4766                         unsigned long *zones_size,
+4767                         unsigned long *zholes_size)
+4768 {   
+4769     unsigned long realtotalpages, totalpages = 0;
+4770     enum zone_type i;
+4771     
+4772     for (i = 0; i < MAX_NR_ZONES; i++)
+4773         totalpages += zone_spanned_pages_in_node(pgdat->node_id, i,
+4774                              node_start_pfn,
+4775                              node_end_pfn,
+4776                              zones_size);
+4777     pgdat->node_spanned_pages = totalpages;
+4778     
+4779     realtotalpages = totalpages;
+4780     for (i = 0; i < MAX_NR_ZONES; i++)
+4781         realtotalpages -=
+4782             zone_absent_pages_in_node(pgdat->node_id, i,
+4783                           node_start_pfn, node_end_pfn,
+4784                           zholes_size);
+4785     pgdat->node_present_pages = realtotalpages;
+4786     printk(KERN_DEBUG "On node %d totalpages: %lu\n", pgdat->node_id,
+4787                             realtotalpages);
+4788 }
+
+接着调用alloc_node_mem_map(pgdat);为NODE(0)的所有页描述符分配空闲区域:
+4994 static void __init_refok alloc_node_mem_map(struct pglist_data *pgdat)
+4995 {  
+4996     /* Skip empty nodes */
+4997     if (!pgdat->node_spanned_pages)
+4998         return;
+4999    
+5000 #ifdef CONFIG_FLAT_NODE_MEM_MAP
+5001     /* ia64 gets its own node_mem_map, before this, without bootmem */
+5002     if (!pgdat->node_mem_map) {
+5003         unsigned long size, start, end;
+5004         struct page *map;
+5005    
+5006         /*
+5007          * The zone's endpoints aren't required to be MAX_ORDER
+5008          * aligned but the node_mem_map endpoints must be in order
+5009          * for the buddy allocator to function correctly.
+5010          */
+5011         start = pgdat->node_start_pfn & ~(MAX_ORDER_NR_PAGES - 1);
+5012         end = pgdat_end_pfn(pgdat);
+5013         end = ALIGN(end, MAX_ORDER_NR_PAGES);
+5014         size =  (end - start) * sizeof(struct page);
+5015         map = alloc_remap(pgdat->node_id, size);
+5016         if (!map)
+5017             map = memblock_virt_alloc_node_nopanic(size,
+5018                                    pgdat->node_id);
+5019         pgdat->node_mem_map = map + (pgdat->node_start_pfn - start);
+5020     }
+5021 #ifndef CONFIG_NEED_MULTIPLE_NODES
+5022     /*
+5023      * With no DISCONTIG, the global mem_map is just set as node 0's
+5024      */
+5025     if (pgdat == NODE_DATA(0)) {
+5026         mem_map = NODE_DATA(0)->node_mem_map;
+5027 #ifdef CONFIG_HAVE_MEMBLOCK_NODE_MAP
+5028         if (page_to_pfn(mem_map) != pgdat->node_start_pfn)
+5029             mem_map -= (pgdat->node_start_pfn - ARCH_PFN_OFFSET);
+5030 #endif /* CONFIG_HAVE_MEMBLOCK_NODE_MAP */
+5031     }
+5032 #endif
+5033 #endif /* CONFIG_FLAT_NODE_MEM_MAP */
+5034 } 
+现在内核已经把FLATMEM作为默认内存模型了,所以CONFIG_FLAT_NODE_MEM_MAP也就不配置了.什么是内存模型,针对 x86 体系就是对页面的管理算法及其相关的数据结构。Linux 目前支持三种内存管理模型:FLATMEM(平坦模型)、DISCONTIGMEM(折扣模型)和 SPARSEMEM(稀疏模型)。不知道从哪个Linux 版本以后,就把 SPARSEMEM 作为默认的内存模型了。
+
+(本文所有用FLATMEM模型)
+FLATMEM 模型将所有的页描述符,全都放到全局数组 mem_map 中:
+struct page *mem_map;
+mem_map 的每一个元素就是一个page 结构,那么当我要获得一个页面的信息,就把对应页面的页号pfn加上首地址mem_map就能得到对应的页描述符结构page。
+
+5002     if (!pgdat->node_mem_map)因为没有初始化会进入分支,设置内部变量start、end、size分别为本节点pglist_data的第一个可用页面页号node_start_pfn,最后一个可用页面页号,以及总的page大小。然后尝试alloc_remap(pgdat->node_id, size);来分配页描述符.主要是从__initdata node_memmap_pfn[MAX_NUMNODES]数组中来分配内存....这里会失败,则调用memblock_virt_alloc_node_nopanic()(CONFIG_NO_BOOTMEM配置已经弃用):
+
+292 static inline void * __init memblock_virt_alloc_node_nopanic(  
+293                         phys_addr_t size, int nid)
+294 {    
+295     return __alloc_bootmem_node_nopanic(NODE_DATA(nid), size,
+296                          SMP_CACHE_BYTES,
+297                          BOOTMEM_LOW_LIMIT);
+298 }
+
+330 void * __init __alloc_bootmem_node_nopanic(pg_data_t *pgdat, unsigned long size,                                                                           
+331                    unsigned long align, unsigned long goal)
+332 {           
+333     if (WARN_ON_ONCE(slab_is_available()))
+334         return kzalloc_node(size, GFP_NOWAIT, pgdat->node_id);
+335     
+336     return ___alloc_bootmem_node_nopanic(pgdat, size, align, goal, 0);
+337 } 
+
+303 void * __init ___alloc_bootmem_node_nopanic(pg_data_t *pgdat,  
+304                            unsigned long size,
+305                            unsigned long align,
+306                            unsigned long goal,
+307                            unsigned long limit)
+308 {           
+309     void *ptr;
+310             
+311 again:      
+312     ptr = __alloc_memory_core_early(pgdat->node_id, size, align,
+313                     goal, limit);
+314     if (ptr)
+315         return ptr;
+316             
+317     ptr = __alloc_memory_core_early(NUMA_NO_NODE, size, align,
+318                     goal, limit);
+319     if (ptr)
+320         return ptr;
+321             
+322     if (goal) {
+323         goal = 0;
+324         goto again;
+325     }       
+326             
+327     return NULL;
+328 }   
+
+333行WARN_ON_ONCE(slab_is_available()),内有只要有万分之一可能性都要去尝试一下,比如这里有可能一个计算集群中的其他节点先于本地节点初始化了一个 slab 分配器,就去尝试使用它来分配。
+
+!!!!!!!!maxwellxxx初始化阶段很重要的函数!!!!!!!!!!!
+这里要注意这个函数与曾经的版本有较大不同,以前它会调用find_early_area()从early_node_map[]数组的某个元素中找到一个可用的空间,而现在是用__memblock_find_range_bottom_up,或者__memblock_find_range_top_down两种方式来分配内存.
+find_early_area()曾经还被用来分配页表,在现在版本中已经被其他函数替代.还记得alloc_low_pages么?
+看这里最终调用了__alloc_memory_core_early()函数.
+ 35 static void * __init __alloc_memory_core_early(int nid, u64 size, u64 align,
+ 36                     u64 goal, u64 limit)
+ 37 {  
+ 38     void *ptr;
+ 39     u64 addr;
+ 40    
+ 41     if (limit > memblock.current_limit)
+ 42         limit = memblock.current_limit;
+ 43    
+ 44     addr = memblock_find_in_range_node(size, align, goal, limit, nid);
+ 45     if (!addr)
+ 46         return NULL;
+ 47    
+ 48     if (memblock_reserve(addr, size))
+ 49         return NULL;
+ 50    
+ 51     ptr = phys_to_virt(addr);
+ 52     memset(ptr, 0, size);
+ 53     /*
+ 54      * The min_count is set to 0 so that bootmem allocated blocks
+ 55      * are never reported as leaks.
+ 56      */
+ 57     kmemleak_alloc(ptr, size, 0, 0);
+ 58     return ptr;
+ 59 }
+函数主要是调用memblock_find_in_range_node()来分配内存,
+170 /**               
+ 171  * memblock_find_in_range_node - find free area in given range and node
+ 172  * @size: size of free area to find
+ 173  * @align: alignment of free area to find
+ 174  * @start: start of candidate range
+ 175  * @end: end of candidate range, can be %MEMBLOCK_ALLOC_{ANYWHERE|ACCESSIBLE}                                                                             
+ 176  * @nid: nid of the free area to find, %NUMA_NO_NODE for any node
+ 177  *                
+ 178  * Find @size free area aligned to @align in the specified range and node.
+ 179  *                
+ 180  * When allocation direction is bottom-up, the @start should be greater
+ 181  * than the end of the kernel image. Otherwise, it will be trimmed. The
+ 182  * reason is that we want the bottom-up allocation just near the kernel
+ 183  * image so it is highly likely that the allocated memory and the kernel
+ 184  * will reside in the same node.
+ 185  *                
+ 186  * If bottom-up allocation failed, will try to allocate memory top-down.
+ 187  *                
+ 188  * RETURNS:       
+ 189  * Found address on success, 0 on failure.
+ 190  */               
+ 191 phys_addr_t __init_memblock memblock_find_in_range_node(phys_addr_t size,
+ 192                     phys_addr_t align, phys_addr_t start,
+ 193                     phys_addr_t end, int nid)
+ 194 {                 
+ 195     phys_addr_t kernel_end, ret;
+ 196                   
+ 197     /* pump up @end */
+ 198     if (end == MEMBLOCK_ALLOC_ACCESSIBLE)
+ 199         end = memblock.current_limit;
+ 200                   
+ 201     /* avoid allocating the first page */
+ 202     start = max_t(phys_addr_t, start, PAGE_SIZE);
+ 203     end = max(start, end);
+ 204     kernel_end = __pa_symbol(_end);
+ 205                   
+ 206     /*            
+ 207      * try bottom-up allocation only when bottom-up mode
+ 208      * is set and @end is above the kernel image.
+ 209      */           
+ 210     if (memblock_bottom_up() && end > kernel_end) {
+ 211         phys_addr_t bottom_up_start;
+ 212                   
+ 213         /* make sure we will allocate above the kernel */
+ 214         bottom_up_start = max(start, kernel_end);
+ 215                   
+ 216         /* ok, try bottom-up allocation first */
+ 217         ret = __memblock_find_range_bottom_up(bottom_up_start, end,
+ 218                               size, align, nid);
+ 219         if (ret)  
+ 220             return ret;
+ 221                   
+ 222         /*        
+ 223          * we always limit bottom-up allocation above the kernel,
+ 224          * but top-down allocation doesn't have the limit, so
+ 225          * retrying top-down allocation may succeed when bottom-up
+ 226          * allocation failed.
+ 227          *         
+ 228          * bottom-up allocation is expected to be fail very rarely,
+ 229          * so we use WARN_ONCE() here to see the stack trace if
+ 230          * fail happens.
+ 231          */        
+ 232         WARN_ONCE(1, "memblock: bottom-up allocation failed, "
+ 233                  "memory hotunplug may be affected\n");
+ 234     }              
+ 235                    
+ 236     return __memblock_find_range_top_down(start, end, size, align, nid);
+ 237 } 
+看注释是通过两种方式来分配内存的(maxwellxxx 函数需要重点分析)
+
+回到alloc_node_mem_map()调用pgdat->node_mem_map = map + (pgdat->node_start_pfn - start);将pglist_data的node_mem_map字段指向这个size大小的page区域.
+
+这个时候存放所有页描述符的page的空间有了,回到free_area_init_node 函数中,调用
+5063     free_area_init_core(pgdat, start_pfn, end_pfn,
+5064                 zones_size, zholes_size);
+传递的参数是本节点的pglist_data,为NULL的zones_size和zholes_size.
+
+4885 /* 
+4886  * Set up the zone data structures:
+4887  *   - mark all pages reserved
+4888  *   - mark all memory queues empty
+4889  *   - clear the memory bitmaps
+4890  * 
+4891  * NOTE: pgdat should get zeroed by caller.
+4892  */
+4893 static void __paginginit free_area_init_core(struct pglist_data *pgdat,
+4894         unsigned long node_start_pfn, unsigned long node_end_pfn,
+4895         unsigned long *zones_size, unsigned long *zholes_size)
+4896 {  
+4897     enum zone_type j;
+4898     int nid = pgdat->node_id;
+4899     unsigned long zone_start_pfn = pgdat->node_start_pfn;
+4900     int ret;
+4901    
+4902     pgdat_resize_init(pgdat);
+4903 #ifdef CONFIG_NUMA_BALANCING
+4904     spin_lock_init(&pgdat->numabalancing_migrate_lock);
+4905     pgdat->numabalancing_migrate_nr_pages = 0;
+4906     pgdat->numabalancing_migrate_next_window = jiffies;
+4907 #endif
+4908     init_waitqueue_head(&pgdat->kswapd_wait);
+4909     init_waitqueue_head(&pgdat->pfmemalloc_wait);
+4910     pgdat_page_ext_init(pgdat);
+4911    
+4912     for (j = 0; j < MAX_NR_ZONES; j++) {
+4913         struct zone *zone = pgdat->node_zones + j;
+4914         unsigned long size, realsize, freesize, memmap_pages;
+4915    
+4916         size = zone_spanned_pages_in_node(nid, j, node_start_pfn,
+4917                           node_end_pfn, zones_size);
+4918         realsize = freesize = size - zone_absent_pages_in_node(nid, j,
+4919                                 node_start_pfn,
+4920                                 node_end_pfn,
+4921                                 zholes_size);
+4922    
+4923         /*
+4924          * Adjust freesize so that it accounts for how much memory
+4925          * is used by this zone for memmap. This affects the watermark
+4926          * and per-cpu initialisations
+4927          */
+4928         memmap_pages = calc_memmap_size(size, realsize);
+4929         if (!is_highmem_idx(j)) {
+4930             if (freesize >= memmap_pages) {
+4931                 freesize -= memmap_pages;
+4932                 if (memmap_pages)
+4933                     printk(KERN_DEBUG
+4934                            "  %s zone: %lu pages used for memmap\n",
+4935                            zone_names[j], memmap_pages);
+4936             } else
+4937                 printk(KERN_WARNING
+4938                     "  %s zone: %lu pages exceeds freesize %lu\n",
+4939                     zone_names[j], memmap_pages, freesize);
+4940         }
+4941                                                                                                                                                           
+4942         /* Account for reserved pages */
+4943         if (j == 0 && freesize > dma_reserve) {
+4944             freesize -= dma_reserve;
+4945             printk(KERN_DEBUG "  %s zone: %lu pages reserved\n",
+4946                     zone_names[0], dma_reserve);
+4947         }
+4948    
+4949         if (!is_highmem_idx(j))
+4950             nr_kernel_pages += freesize;
+4951         /* Charge for highmem memmap if there are enough kernel pages */
+4952         else if (nr_kernel_pages > memmap_pages * 2)
+4953             nr_kernel_pages -= memmap_pages;
+4954         nr_all_pages += freesize;
+4955    
+4956         zone->spanned_pages = size;
+4957         zone->present_pages = realsize;
+4958         /*
+4959          * Set an approximate value for lowmem here, it will be adjusted
+4960          * when the bootmem allocator frees pages into the buddy system.
+4961          * And all highmem pages will be managed by the buddy system.
+4962          */
+4963         zone->managed_pages = is_highmem_idx(j) ? realsize : freesize;
+4964 #ifdef CONFIG_NUMA
+4965         zone->node = nid;
+4966         zone->min_unmapped_pages = (freesize*sysctl_min_unmapped_ratio)
+4967                         / 100;
+4968         zone->min_slab_pages = (freesize * sysctl_min_slab_ratio) / 100;
+4969 #endif
+4970         zone->name = zone_names[j];
+4971         spin_lock_init(&zone->lock);
+4972         spin_lock_init(&zone->lru_lock);
+4973         zone_seqlock_init(zone);
+4974         zone->zone_pgdat = pgdat;
+4975         zone_pcp_init(zone);
+4976    
+4977         /* For bootup, initialized properly in watermark setup */
+4978         mod_zone_page_state(zone, NR_ALLOC_BATCH, zone->managed_pages);
+4979     
+4980         lruvec_init(&zone->lruvec);
+4981         if (!size)
+4982             continue;
+4983     
+4984         set_pageblock_order();
+4985         setup_usemap(pgdat, zone, zone_start_pfn, size);
+4986         ret = init_currently_empty_zone(zone, zone_start_pfn,
+4987                         size, MEMMAP_EARLY);
+4988         BUG_ON(ret);
+4989         memmap_init(size, nid, j, zone_start_pfn);
+4990         zone_start_pfn += size;
+4991     }
+4992 }   
+
+4902调用pgdat_resize_init(pgdat);初始化pglist_data的自旋锁
+4908调用init_waitqueue_head(&pgdat->kswapd_wait);初始化kswapd_wait字段,作为等待队列的头。(http://blog.csdn.net/yunsongice/archive/2010/04/25/5526070.aspx maxwellxxx)
+
+
+4912     for (j = 0; j < MAX_NR_ZONES; j++)进入循环,MAX_NR_ZONES=3.
+
+每个NODE的Zone信息都存放在pglist_data的node_zones数组中,所以先获取每个元素的地址,赋给内部变量zone.随后zone_spanned_pages_in_node为根据传递进来的zholes_size去掉一些page,由于传递的参数为NULL,所以这个函数啥也不做,得到的size实际上是页框page的总量,即early_node_map[i].end_pfn 减去 early_node_map[i].start_pfn.
+
+接下来
+4918         realsize = freesize = size - zone_absent_pages_in_node(nid, j,
+4919                                 node_start_pfn,
+4920                                 node_end_pfn,
+4921                                 zholes_size);
+zone_absent_pages_in_node也是空函数,所以realsize=freesize=size.
+
+接下來4928 memmap_pages = calc_memmap_size(size, realsize);计算出所有页框的大小:
+
+4865 static unsigned long __paginginit calc_memmap_size(unsigned long spanned_pages,
+4866                            unsigned long present_pages)
+4867 {
+4868     unsigned long pages = spanned_pages;
+4869  
+4870     /*
+4871      * Provide a more accurate estimation if there are holes within
+4872      * the zone and SPARSEMEM is in use. If there are holes within the
+4873      * zone, each populated memory region may cost us one or two extra
+4874      * memmap pages due to alignment because memmap pages for each
+4875      * populated regions may not naturally algined on page boundary.
+4876      * So the (present_pages >> 4) heuristic is a tradeoff for that.
+4877      */
+4878     if (spanned_pages > present_pages + (present_pages >> 4) &&
+4879         IS_ENABLED(CONFIG_SPARSEMEM))
+4880         pages = present_pages;
+4881  
+4882     return PAGE_ALIGN(pages * sizeof(struct page)) >> PAGE_SHIFT;
+4883 }
+
+PAGE_ALIGN(pages * sizeof(struct page)) >> PAGE_SHIFT;结果左移 PAGE_SHIFT 位的意思我们很熟悉了,就是计算出要装下 size 个页描述符需要几个实际的页框,最后把这个数赋值给内部变量 memmap_pages。这个逻辑关系千万要注意!
+
+4929-4941打印一些错误信息,因为如果计算出来的memmap_pages 比现在已经有的realsize还大,就肯定出错了.4942-4957,让realsize去掉一些保留的页面并增加一些内核使用的页面数量,最后将计算出的总页框数量size和实际使用的页框数量realsize赋值给zone的spanned_pages字段和present_pages.
+
+随后是初始化zone的其他字段,最后调用4989 memmap_init(size, nid, j, zone_start_pfn);初始化所有的页描述符:
+4232 #ifndef __HAVE_ARCH_MEMMAP_INIT
+4233 #define memmap_init(size, nid, zone, start_pfn) \                      
+4234     memmap_init_zone((size), (nid), (zone), (start_pfn), MEMMAP_EARLY)
+4235 #endif
+因为找不到__HAVE_ARCH_MEMMAP_INIT配置,所以实际调用memmap_init_zone(),初始化所有的页描述符,下面是具体的初始化,传入的参数是总页框数size,节点号nid(为0),zone号(0~2),以及第一个可用页面的页号 zone_start_pfn.
+4159 /*  
+4160  * Initially all pages are reserved - free ones are freed
+4161  * up by free_all_bootmem() once the early boot process is
+4162  * done. Non-atomic initialization, single-pass.
+4163  */
+4164 void __meminit memmap_init_zone(unsigned long size, int nid, unsigned long zone, 
+4165         unsigned long start_pfn, enum memmap_context context)
+4166 {
+4167     struct page *page;
+4168     unsigned long end_pfn = start_pfn + size;
+4169     unsigned long pfn;
+4170     struct zone *z;
+4171     
+4172     if (highest_memmap_pfn < end_pfn - 1)
+4173         highest_memmap_pfn = end_pfn - 1;
+4174  
+4175     z = &NODE_DATA(nid)->node_zones[zone];
+4176     for (pfn = start_pfn; pfn < end_pfn; pfn++) {
+4177         /*
+4178          * There can be holes in boot-time mem_map[]s
+4179          * handed to this function.  They do not
+4180          * exist on hotplugged memory.
+4181          */
+4182         if (context == MEMMAP_EARLY) {
+4183             if (!early_pfn_valid(pfn))
+4184                 continue;
+4185             if (!early_pfn_in_nid(pfn, nid))
+4186                 continue;
+4187         }
+4188         page = pfn_to_page(pfn);
+4189         set_page_links(page, zone, nid, pfn);
+4190         mminit_verify_page_links(page, zone, nid, pfn);
+4191         init_page_count(page);
+4192         page_mapcount_reset(page);
+4193         page_cpupid_reset_last(page);
+4194         SetPageReserved(page);
+4195         /*
+4196          * Mark the block movable so that blocks are reserved for
+4197          * movable at startup. This will force kernel allocations
+4198          * to reserve their blocks rather than leaking throughout
+4199          * the address space during boot when many long-lived
+4200          * kernel allocations are made. Later some blocks near
+4201          * the start are marked MIGRATE_RESERVE by
+4202          * setup_zone_migrate_reserve()
+4203          *
+4204          * bitmap is created for zone's valid pfn range. but memmap
+4205          * can be created for invalid pages (for alignment)
+4206          * check here not to call set_pageblock_migratetype() against
+4207          * pfn out of zone.
+4208          */
+4209         if ((z->zone_start_pfn <= pfn)
+4210             && (pfn < zone_end_pfn(z))
+4211             && !(pfn & (pageblock_nr_pages - 1)))
+4212             set_pageblock_migratetype(page, MIGRATE_MOVABLE);
+4213    
+4214         INIT_LIST_HEAD(&page->lru);
+4215 #ifdef WANT_PAGE_VIRTUAL
+4216         /* The shift won't overflow because ZONE_NORMAL is below 4G. */
+4217         if (!is_highmem_idx(zone))
+4218             set_page_address(page, __va(pfn << PAGE_SHIFT));
+4219 #endif
+4220     }
+4221 } 
+
+之前已经使用alloc_node_mem_map为NODE(0)分配了所有页描述符page分配了空闲的区域,并由全局变量mem_map指向,所以4176 for (pfn = start_pfn; pfn < end_pfn; pfn++) 对每个空闲页框的描述符page都进行一系列的初始化操作,其中4188 page = pfn_to_page(pfn);通过页框号得到对应页描述符page的地址:
+73 #define pfn_to_page __pfn_to_page 
+30 #define __pfn_to_page(pfn)  (mem_map + ((pfn) - ARCH_PFN_OFFSET))   
+
+接下来就是对页描述符进行一系列初始化了.
+!!!maxwellxxx这里关注page描述符结构以及内存如何分配问题!!!
+
+到此为止, setup_arch()中比较重要的内容基本介绍完毕,主要涉及内存管理系统的一些底层初始化代码。经过这一番初始化后,内存初始化已经完成了特定系统的基本初始化,接下来,start_kernel 开始构建内存管理的经典算法应用:伙伴系统和 slab 内存管理。
+对这两个概念不太熟悉的同学请查阅博客“伙伴系统算法”http://blog.csdn.net/yunsongice/archive/2010/01/22/5225155.aspx
+和“slab 分配器”http://blog.csdn.net/yunsongice/archive/2010/01/30/5272715.aspx。
+
+
+
+回到start_kernel
