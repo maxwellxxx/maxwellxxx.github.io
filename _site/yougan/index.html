@@ -28,9 +28,10 @@
     </div>
 
     <link rel="stylesheet" href="/js/prettify/prettify.css" />
+<link href="/assets/themes/fancyBox/jquery.fancybox.css?v=2.1.5" rel="stylesheet" media="all" />
 <style type="text/css">
     body { background:#e8e8e8; }
-    @media screen and (max-width: 750px){
+    @media screen and (max-width: 1000px){
         body { background:#fff; }
     }
     @media screen and (max-width: 1020px){
@@ -137,6 +138,23 @@ var duoshuoQuery = {short_name:"maxwellxxx"};
 </div>
   
 <script src="/js/post.js" type="text/javascript"></script>
+<script type="text/javascript" src="/assets/themes/fancyBox/jquery.fancybox.pack.js?v=2.1.5"></script>
+<script>
+// 给图片添加链接
+$(document).ready(function() {
+  $("p img").each(function() {
+    var strA = "<a id='yourid' href='" + this.src + "'></a>";
+    $(this).wrapAll(strA);
+  });
+});
+
+// fancybox
+$("#yourid").fancybox({
+  openEffect    : 'elastic',
+  closeEffect   : 'elastic',
+});
+</script>
+
 
 
     <script type="text/javascript">
