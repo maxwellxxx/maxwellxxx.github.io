@@ -115,6 +115,85 @@ category: manual
 	 23 unsigned int pci_probe = PCI_PROBE_BIOS | PCI_PROBE_CONF1 | PCI_PROBE_CONF2 | 
  	 24                 PCI_PROBE_MMCONF;
 
+已经讲过“宿主——PCI桥”的I/O口一定实在地址为0xCF8~0xCFF处，其中0xCF8~0xCFB为地址口，0xCFC～0xCFF为数据口。这种配置就是这里所谓的PCI_PROBE_CONF1，当然还有PCI_PROBE_CONF2，但是好像已经完全弃用了。。。所以在这里就可以看到是优先尝试TYPE1的，这里注意第287行！request_region()这个函数，还记得cat /proc/ioports么？就是在这里的！！这个函数负责注册资源，这个函数放在后面重点介绍。
+
+291行，将raw_pci_ops的值赋为pci_direct_conf1的地址，也就TYPE1型的读写PCI配置空间的函数：
+
+	//raw_pci_ops为一个全局数据结构实例，作用是记录PCI配置空间寄存器读写操作的函数。（arch/x86/pci/common.c）
+	 38 const struct pci_raw_ops *__read_mostly raw_pci_ops
+	****************************************************************
+	//pci_direct_conf1定义（arch/x86/pci/direct.c ）
+	 82 const struct pci_raw_ops pci_direct_conf1 = {
+	 83     .read =     pci_conf1_read,
+	 84     .write =    pci_conf1_write,
+	 85 };
+	****************************************************************
+	//pci_raw_ops结构定义（arch/x86/include/asm/pci_x86.h）
+	 98 struct pci_raw_ops { 
+	 99     int (*read)(unsigned int domain, unsigned int bus, unsigned int devfn,
+	100                         int reg, int len, u32 *val);
+	101     int (*write)(unsigned int domain, unsigned int bus, unsigned int devfn,
+	102                         int reg, int len, u32 val);
+	103 };
+
+情况已经很明了了,正真的读写函数是pci_conf1_read和pci_conf1_write,我们这里只分析下read的实现,因为代码也说了__read_mostly 偷个懒(^^):
+
+	 arch/x86/pci/direct.c
+	 10 /*
+	 11  * Functions for accessing PCI base (first 256 bytes) and extended
+	 12  * (4096 bytes per PCI function) configuration space with type 1
+	 13  * accesses.
+	 14  */
+	 15  
+	 16 #define PCI_CONF1_ADDRESS(bus, devfn, reg) \
+	 17     (0x80000000 | ((reg & 0xF00) << 16) | (bus << 16) \
+	 18     | (devfn << 8) | (reg & 0xFC))
+	 19    
+	 20 static int pci_conf1_read(unsigned int seg, unsigned int bus,
+	 21               unsigned int devfn, int reg, int len, u32 *value)
+	 22 {  
+	 23     unsigned long flags;
+	 24    
+	 25     if (seg || (bus > 255) || (devfn > 255) || (reg > 4095)) {
+	 26         *value = -1;
+	 27         return -EINVAL;
+	 28     }
+	 29    
+	 30     raw_spin_lock_irqsave(&pci_config_lock, flags);
+	 31    
+	 32     outl(PCI_CONF1_ADDRESS(bus, devfn, reg), 0xCF8);
+	 33    
+	 34     switch (len) {
+	 35     case 1:
+	 36         *value = inb(0xCFC + (reg & 3));
+	 37         break;
+	 38     case 2:
+	 39         *value = inw(0xCFC + (reg & 2));
+	 40         break;
+	 41     case 4:
+	 42         *value = inl(0xCFC);
+	 43         break;
+	 44     }
+	 45    
+	 46     raw_spin_unlock_irqrestore(&pci_config_lock, flags);
+	 47    
+	 48     return 0;
+	 49 }  
+
+首先看宏定义,PCI_CONF1_ADDRESS,可以看到完全是按照第二章中的要求合成的设备综合地址,如果忘了,还是看下图:
+***
+![JCQ](/images/JCQ.png)
+***
+正真读的时候也完全是按照流程,先向地址寄存器0XCF8写综合地址(line32).然后根据请求的长度len来分情况处理,分别从内容寄存器0xCFC读一个byte,word,long。！！！注意配置空间是小端的形式，所以留意这里的处理手法,写的时候也要注意转换！！！
+
+
+好了，现在TYPE已经确定为1了，相关的读写操作也已经设置好了，我们回到pci_arch_init()里，看到31行调用了pci_direct_init(),这个函数没干嘛，跳过！至此就没什么了，后面两个是DMI相关，这里我们不关心。
+
+
+
+那现在完成的工作就是为了枚举和配置做准备，实际上流程如何，且看下篇。
+
+
 ##参考目录
 [1]《Linux内核情景分析》[中]毛德操等 [著]
 
