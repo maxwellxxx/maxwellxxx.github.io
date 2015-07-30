@@ -190,8 +190,121 @@ category: manual
 好了，现在TYPE已经确定为1了，相关的读写操作也已经设置好了，我们回到pci_arch_init()里，看到31行调用了pci_direct_init(),这个函数没干嘛，跳过！至此就没什么了，后面两个是DMI相关，这里我们不关心。
 
 
+最后无论是读还是写操作必须封装为统一的接口，让后续的所有操作统一来调用，而不用在意到底是TYPE1还是TYPE2，就在arch/x86/pci/common.c中：
 
-那现在完成的工作就是为了枚举和配置做准备，实际上流程如何，且看下篇。
+	 41 int raw_pci_read(unsigned int domain, unsigned int bus, unsigned int devfn,
+	 42                         int reg, int len, u32 *val)
+	 43 {  
+	 44     if (domain == 0 && reg < 256 && raw_pci_ops)
+	 45         return raw_pci_ops->read(domain, bus, devfn, reg, len, val);
+	 46     if (raw_pci_ext_ops)
+	 47         return raw_pci_ext_ops->read(domain, bus, devfn, reg, len, val);
+	 48     return -EINVAL;
+	 49 }  
+	 50    
+	 51 int raw_pci_write(unsigned int domain, unsigned int bus, unsigned int devfn,
+	 52                         int reg, int len, u32 val)
+	 53 {  
+	 54     if (domain == 0 && reg < 256 && raw_pci_ops)
+	 55         return raw_pci_ops->write(domain, bus, devfn, reg, len, val);
+	 56     if (raw_pci_ext_ops)
+	 57         return raw_pci_ext_ops->write(domain, bus, devfn, reg, len, val);
+	 58     return -EINVAL;
+	 59 }  
+	 60    
+	 61 static int pci_read(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 *value)
+	 62 {  
+	 63     return raw_pci_read(pci_domain_nr(bus), bus->number,
+	 64                  devfn, where, size, value);
+	 65 }  
+	 66    
+	 67 static int pci_write(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 value)
+	 68 {  
+	 69     return raw_pci_write(pci_domain_nr(bus), bus->number,
+	 70                   devfn, where, size, value);
+	 71 } 
+	 72     
+	 73 struct pci_ops pci_root_ops = {
+	 74     .read = pci_read,
+	 75     .write = pci_write,
+	 76 };  
+
+还没完，这里的pci_root_ops会赋值给0号总线的pci_bus结构，关于这个结构，以后会涉及到，这里先简单提一下：
+
+	bus = pci_scan_root_bus(NULL, busnum, &pci_root_ops, sd, &resources); 
+	      					   |
+	      	 				   |
+	      b = pci_create_root_bus(parent, bus, ops, sysdata, resources);
+
+	//pci_bus结构 （include/linux/pci.h）
+	 444 struct pci_bus {
+	 445     struct list_head node;      /* node in list of buses */ 
+	 446     struct pci_bus  *parent;    /* parent bus this bridge is on */
+	 447     struct list_head children;  /* list of child buses */
+	 448     struct list_head devices;   /* list of devices on this bus */
+	 449     struct pci_dev  *self;      /* bridge device as seen by parent */
+	 450     struct list_head slots;     /* list of slots on this bus */
+	 451     struct resource *resource[PCI_BRIDGE_RESOURCE_NUM];
+	 452     struct list_head resources; /* address space routed to this bus */
+	 453     struct resource busn_res;   /* bus numbers routed to this bus */
+	 454
+	 455     struct pci_ops  *ops;       /* configuration access functions */
+	 456     struct msi_controller *msi; /* MSI controller */
+	 457     void        *sysdata;   /* hook for sys-specific extension */
+	 .........................
+	 477 }; 
+
+到这里你以为万事大吉了么？其实还没有，这里需要看到（drivers/pci/access.c）
+ 
+	 24 #define PCI_byte_BAD 0
+	 25 #define PCI_word_BAD (pos & 1)
+	 26 #define PCI_dword_BAD (pos & 3)
+	 27 
+	 28 #define PCI_OP_READ(size,type,len) \
+	 29 int pci_bus_read_config_##size \
+	 30     (struct pci_bus *bus, unsigned int devfn, int pos, type *value) \
+	 31 {                                   \
+	 32     int res;                            \
+	 33     unsigned long flags;                        \
+	 34     u32 data = 0;                           \
+	 35     if (PCI_##size##_BAD) return PCIBIOS_BAD_REGISTER_NUMBER;   \
+	 36     raw_spin_lock_irqsave(&pci_lock, flags);            \
+	 37     res = bus->ops->read(bus, devfn, pos, len, &data);      \
+	 38     *value = (type)data;                        \
+	 39     raw_spin_unlock_irqrestore(&pci_lock, flags);       \
+	 40     return res;                         \
+	 41 } 
+	 42 
+	 43 #define PCI_OP_WRITE(size,type,len) \
+	 44 int pci_bus_write_config_##size \
+	 45     (struct pci_bus *bus, unsigned int devfn, int pos, type value)  \
+	 46 {                                   \
+	 47     int res;                            \
+	 48     unsigned long flags;                        \
+	 49     if (PCI_##size##_BAD) return PCIBIOS_BAD_REGISTER_NUMBER;   \
+	 50     raw_spin_lock_irqsave(&pci_lock, flags);            \
+	 51     res = bus->ops->write(bus, devfn, pos, len, value);     \
+	 52     raw_spin_unlock_irqrestore(&pci_lock, flags);       \
+	 53     return res;                         \
+	 54 }
+	 55
+	 56 PCI_OP_READ(byte, u8, 1)
+	 57 PCI_OP_READ(word, u16, 2)
+	 58 PCI_OP_READ(dword, u32, 4)
+	 59 PCI_OP_WRITE(byte, u8, 1)
+	 60 PCI_OP_WRITE(word, u16, 2)
+	 61 PCI_OP_WRITE(dword, u32, 4)
+	 62
+	 63 EXPORT_SYMBOL(pci_bus_read_config_byte);
+	 64 EXPORT_SYMBOL(pci_bus_read_config_word);
+	 65 EXPORT_SYMBOL(pci_bus_read_config_dword);
+	 66 EXPORT_SYMBOL(pci_bus_write_config_byte);
+	 67 EXPORT_SYMBOL(pci_bus_write_config_word);
+	 68 EXPORT_SYMBOL(pci_bus_write_config_dword);
+
+看line29宏定义，size作为字符串替换，联合line58就制造出了pci_bus_read_config_dword,最后再export。这里的一系列宏定义最终生产出了line63～line68这一系列的函数，而以后在内核在枚举和配置时也就是通过调用这6个导出函数实现的。（而这六个函数并不能通过cscope等代码导航工具探测到。。。所以要注意啦！）
+
+那现在完成的工作就是为了枚举和配置做准备，真的是万事具备，只欠东风了，而实际上流程如何，且看下篇。
 
 
 ##参考目录
