@@ -34,7 +34,7 @@ category: manual
 	   |
 	   |
 	   |
-	   pcibios_scan_root（arch/x86/pci/common.c）
+	   pcibios_scan_root（0）（arch/x86/pci/common.c）
 	****************************************************
 	475 void pcibios_scan_root(int busnum)
 	476 {   
@@ -57,6 +57,58 @@ category: manual
 	493     } 
 	494 } 
 
+在这个函数里首先调用 x86_pci_root_bus_resources为0号总线“分配资源”，函数如下：
+
+	 //arch/x86/pci/bus_numa.c
+	 30 void x86_pci_root_bus_resources(int bus, struct list_head *resources)
+	 31 {   
+	 32     struct pci_root_info *info = x86_find_pci_root_info(bus);
+	 33     struct pci_root_res *root_res;
+	 34     struct pci_host_bridge_window *window;
+	 35     bool found = false;
+	 36     
+	 37     if (!info)
+	 38         goto default_resources;
+	 ......
+	 ......
+	 66     
+	 67 default_resources:
+	 68     /*
+	 69      * We don't have any host bridge aperture information from the
+	 70      * "native host bridge drivers," e.g., amd_bus or broadcom_bus,
+	 71      * so fall back to the defaults historically used by pci_create_bus().
+	 72      */
+	 73     printk(KERN_DEBUG "PCI: root bus %02x: using default resources\n", bus);
+	 74     pci_add_resource(resources, &ioport_resource);
+	 75     pci_add_resource(resources, &iomem_resource);
+	 76 }   
+
+	 //drivers/pci/bus.c
+	 20 void pci_add_resource_offset(struct list_head *resources, struct resource *res,
+	 21                  resource_size_t offset)
+	 22 {
+	 23     struct pci_host_bridge_window *window;
+	 24  
+	 25     window = kzalloc(sizeof(struct pci_host_bridge_window), GFP_KERNEL);
+	 26     if (!window) {
+	 27         printk(KERN_ERR "PCI: can't add host bridge window %pR\n", res);
+	 28         return;
+	 29     }         
+	 30  
+	 31     window->res = res;
+	 32     window->offset = offset;
+	 33     list_add_tail(&window->list, resources);
+	 34 }   
+	 35 EXPORT_SYMBOL(pci_add_resource_offset);
+	 36     
+	 37 void pci_add_resource(struct list_head *resources, struct resource *res)
+	 38 {   
+	 39     pci_add_resource_offset(resources, res, 0);
+	 40 }   
+	 41 EXPORT_SYMBOL(pci_add_resource);
+
+
+这里一般情况下就会到default_ressources,
 
 ##参考目录
 [1]《Linux内核情景分析》[中]毛德操等 [著]
