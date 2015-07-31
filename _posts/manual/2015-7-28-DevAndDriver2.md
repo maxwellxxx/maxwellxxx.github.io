@@ -54,7 +54,7 @@ PCI是一种无跳线的系统，也就是说，扩展设备可以通过软件�
 ###基地址寄存器
 一般每个逻辑设备（见下文定义）都有几个需要映射的地址空间，所以在0型头部中还定义了6个“基地址”寄存器，分别用于6个区间的映射。而这些寄存器的操作非常复杂，例如：直接读是区间的地址加上一些标志，当向其中写入全1再读就成了区间长度。除了6个常规区间，有些设备可能还有一块ROM，所以还有一个“扩充ROM基地址”寄存器(148行)，这里给出内核的一些常量定义：
 
-	 80  * Base addresses specify locations in memory or I/O space.
+	 80  /* Base addresses specify locations in memory or I/O space.
 	 81  * Decoded size can be determined by writing a value of
 	 82  * 0xffffffff to the register, and reading it back.  Only
 	 83  * 1 bits are decoded.
@@ -120,7 +120,7 @@ PCI是一种无跳线的系统，也就是说，扩展设备可以通过软件�
 而1型头部就有一些区别，毕竟PCI桥并不需要映射地址空间，从定义中也可以看出,有些定义只针对type 0.而在PCI桥设备中,只有PCI_ADDRESS_0和PCI_ADDRESS_1,而特有的寄存器PCI_PRIMARY_BUS和PCI_SECONDARY_BUS记录其连接的上下两端总线号,其中后者为其连接和控制的总线,而PCI_SUBORDINATE_BUS记录着自此之下,以其为根的子树中最大的总线编号。
 
 ###IRQ（中断）相关寄存器
-一般PCI设备通常是可以发出中断的，所以设备配置寄存器组中还有两个字节（IRQ_LINE,IRQ_PIN）,反映着该设备的总段请求信号线与总线和系统的连接方式。在PCI总线上有INTA～INTD共四条中断请求线，从而在PCI插槽中就会有4根“针”。如果一个设备能产生请求，那么设备内部一定吧中断请求连接到PCI总线的某条中断请求线上.而IRQ_PIN(1~4)就体现了连接到了哪条线,这是硬件决定的，所以这个寄存器是只读。最终连接到系统的中断控制器（8259A或APIC）上的哪一条PCI中断请求线则由IRQ_LINE体现，这称为“中断请求路径”，是由软件选择和设置的，选择的结果放在IRQ_LINE中，注意仅仅保存结果，并不能通过该寄存器来设置。
+一般PCI设备通常是可以发出中断的，所以设备配置寄存器组中还有两个字节（IRQ_LINE,IRQ_PIN）,反映着该设备的总段请求信号线与总线和系统的连接方式。在PCI总线上有INTA～INTD共四条中断请求线，从而在PCI插槽中就会有4根“针”。如果一个设备能产生请求，那么设备内部一定把中断请求连接到PCI总线的某条中断请求线上.而IRQ_PIN(1~4)就体现了连接到了哪条线,这是硬件决定的，所以这个寄存器是只读。最终连接到系统的中断控制器（8259A或APIC）上的哪一条PCI中断请求线则由IRQ_LINE体现，这称为“中断请求路径”，是由软件选择和设置的，选择的结果放在IRQ_LINE中，注意仅仅保存结果，并不能通过该寄存器来设置。
 
 	114 #define PCI_INTERRUPT_LINE  0x3c    /* 8 bits */
 	115 #define PCI_INTERRUPT_PIN   0x3d    /* 8 bits */
