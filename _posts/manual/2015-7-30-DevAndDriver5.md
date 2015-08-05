@@ -1,7 +1,7 @@
 ---
 layout: post
-title: Linux设备驱动模型及其他(4)
-description: Hi，cortana！
+title: Linux设备驱动模型及其他(5)
+description: 扫描根总线（枚举与配置设备）
 category: manual
 ---
 
