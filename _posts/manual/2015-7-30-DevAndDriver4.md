@@ -128,7 +128,7 @@ category: manual
 
 ioport_resource，iomem_resource也就是反映着I/O空间和内存空间地址占用情况的两颗资源树，在以后会详细分析，包括这里的PCI桥窗口。
 
-资源分配结束，返回到pcibios_scan_root()调用pci_scan_root_bus()就开始扫描工作了:
+资源"分配"结束，返回到pcibios_scan_root()调用pci_scan_root_bus()就开始创建根总线结构和扫描总线的工作了:
 
 	bus = pci_scan_root_bus(NULL, busnum, &pci_root_ops, sd, &resources);
 	//drivers/pci/probe.c 
