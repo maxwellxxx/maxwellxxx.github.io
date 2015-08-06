@@ -607,16 +607,19 @@ pci_scan_single_device()调用pci_device_add(dev, bus)来将pci_dev串到根总�
 	        |  |   pci_scan_device（）     //通过读写配置寄存器探测并配置一个逻辑设备的pci_dev结构
 	        |  |     |		      //主要设计到厂商号，flags，功能号，resource等等
 	        |  |     |		      //主要工作还是pci_setup_device来做
-	        |  |	pci_setup_device（）  //读写配置空间，对不同头类型进行分配处理，设置pci_dev结构
+	        |  |	 pci_setup_device（）  //读写配置空间，对不同头类型进行分配处理，设置pci_dev结构
 	        |  |     |
 	        |  |	 | return
 	        |  |   pci_device_add()	      //将pci_dev设备关联到bus，”注册“pci_dev->device等（*）
+	        |  |     |
+	        |  |     |
+	        |  |     device_add(&dev->dev) //!!!!!非常重要（**）
 	        |  |
 	        |  pci_scan_bridge()	      //扫描次层总线
 	        |
-	        pci_bus_add_devices()         //？？？！！！好像跟寻找驱动有关？？ 在这里才将dev->added置位
+	        pci_bus_add_devices()         //？？？！！！好像跟寻找驱动有关？？ 在这里才将dev->added置位(****)
 
-*为涉及到驱动模型的东西，以后会才分析。
+带*为涉及到驱动模型的东西，是非常重要的东西，这里是提醒自己不要忘记，以后会分析。
 ##参考目录
 [1]《Linux内核情景分析》[中]毛德操等 [著]
 
