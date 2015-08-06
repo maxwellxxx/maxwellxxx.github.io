@@ -204,7 +204,7 @@ category: manual
 	1452 }  
 	1453 EXPORT_SYMBOL(pci_bus_read_dev_vendor_id);
 
-看到这里的pci_bus_read_config_dword么？就是我们在第三篇里面讲述的了，这里终于用到了。实际就是去调用bus->ops下的函数，插槽为空或者读取失败就直接返回false（只要厂商标号或者设备号不全为1或0就认为是有效的设备）。如果能成功读到vendorID就成功返回到pci_scan_single_device()，接着调用pci_alloc_dev（）为其分配pci_dev结构，期间进行一些初始化设置。然后设置devfn、vendorID、deviceID等等。。。具体看下其中涉及的函数：
+看到这里的pci_bus_read_config_dword么？就是我们在第三篇里面讲述的了，这里终于用到了。实际就是去调用bus->ops下的函数，插槽为空或者读取失败就直接返回false（只要厂商标号或者设备号不全为1或0就认为是有效的设备）。如果能成功读到vendorID就接着调用pci_alloc_dev（）为其分配pci_dev结构，期间进行一些初始化设置。然后设置devfn、vendorID、deviceID等等。。。具体看下其中涉及的函数：
 
 	1399 struct pci_dev *pci_alloc_dev(struct pci_bus *bus)
 	1400 {   
@@ -274,43 +274,6 @@ category: manual
 	1153         pci_read_config_word(dev, PCI_SUBSYSTEM_VENDOR_ID, &dev->subsystem_vendor);
 	1154         pci_read_config_word(dev, PCI_SUBSYSTEM_ID, &dev->subsystem_device);
 	............
-	1162         if (class == PCI_CLASS_STORAGE_IDE) {
-	1163             u8 progif;
-	1164             pci_read_config_byte(dev, PCI_CLASS_PROG, &progif);
-	1165             if ((progif & 1) == 0) {
-	1166                 region.start = 0x1F0;
-	1167                 region.end = 0x1F7;
-	1168                 res = &dev->resource[0];
-	1169                 res->flags = LEGACY_IO_RESOURCE;
-	1170                 pcibios_bus_to_resource(dev->bus, res, &region);
-	1171                 dev_info(&dev->dev, "legacy IDE quirk: reg 0x10: %pR\n",
-	1172                      res);
-	1173                 region.start = 0x3F6;
-	1174                 region.end = 0x3F6;
-	1175                 res = &dev->resource[1];
-	1176                 res->flags = LEGACY_IO_RESOURCE;
-	1177                 pcibios_bus_to_resource(dev->bus, res, &region);
-	1178                 dev_info(&dev->dev, "legacy IDE quirk: reg 0x14: %pR\n",
-	1179                      res);
-	1180             }
-	1181             if ((progif & 4) == 0) {
-	1182                 region.start = 0x170;
-	1183                 region.end = 0x177;
-	1184                 res = &dev->resource[2];
-	1185                 res->flags = LEGACY_IO_RESOURCE;
-	1186                 pcibios_bus_to_resource(dev->bus, res, &region);
-	1187                 dev_info(&dev->dev, "legacy IDE quirk: reg 0x18: %pR\n",
-	1188                      res);
-	1189                 region.start = 0x376;
-	1190                 region.end = 0x376;
-	1191                 res = &dev->resource[3];
-	1192                 res->flags = LEGACY_IO_RESOURCE;
-	1193                 pcibios_bus_to_resource(dev->bus, res, &region);
-	1194                 dev_info(&dev->dev, "legacy IDE quirk: reg 0x1c: %pR\n",
-	1195                      res);
-	1196             }
-	1197         }
-	1198         break;
 
 针对普通设备,首先通过pci_read_irq(dev)去获取IRQ相关的两个寄存器内容并保存到pci_dev的相关结构中，反应着该设备的中断请求信号线与总线和系统的连接方式，具体请参考第二篇中的说明。
 
@@ -358,36 +321,17 @@ PCI设备中一般都带有一些RAM和ROM空间，通常的控制/状态寄存�
 	 176     struct pci_bus_region region, inverted_region;
 	 177    
 	 178     mask = type ? PCI_ROM_ADDRESS_MASK : ~0;
-	 179    
-	 180     /* No printks while decoding is disabled! */
-	 181     if (!dev->mmio_always_on) {
-	 182         pci_read_config_word(dev, PCI_COMMAND, &orig_cmd);
-	 183         if (orig_cmd & PCI_COMMAND_DECODE_ENABLE) {
-	 184             pci_write_config_word(dev, PCI_COMMAND,
-	 185                 orig_cmd & ~PCI_COMMAND_DECODE_ENABLE);
-	 186         }
-	 187     }
-	 188    
+	 .................................
 	 189     res->name = pci_name(dev);
 	 190    
 	 191     pci_read_config_dword(dev, pos, &l);
 	 192     pci_write_config_dword(dev, pos, l | mask);
 	 193     pci_read_config_dword(dev, pos, &sz);
 	 194     pci_write_config_dword(dev, pos, l);
-	 195    
-	 196     /*
-	 197      * All bits set in sz means the device isn't working properly.
-	 198      * If the BAR isn't implemented, all bits must be 0.  If it's a
-	 199      * memory BAR or a ROM, bit 0 must be clear; if it's an io BAR, bit
-	 200      * 1 must be clear.
-	 201      */
+	 ..........................................
 	 202     if (sz == 0xffffffff)
 	 203         sz = 0;
-	 204    
-	 205     /*
-	 206      * I don't know how l can have all bits set.  Copied from old code.
-	 207      * Maybe it fixes a bug on some ancient platform.
-	 208      */
+	 ..........................................
 	 209     if (l == 0xffffffff)
 	 210         l = 0;
 	 211    
@@ -403,12 +347,7 @@ PCI设备中一般都带有一些RAM和ROM空间，通常的控制/状态寄存�
 	 221             sz64 = sz & PCI_BASE_ADDRESS_MEM_MASK;
 	 222             mask64 = (u32)PCI_BASE_ADDRESS_MEM_MASK;
 	 223         }
-	 224     } else {
-	 225         res->flags |= (l & IORESOURCE_ROM_ENABLE);
-	 226         l64 = l & PCI_ROM_ADDRESS_MASK;
-	 227         sz64 = sz & PCI_ROM_ADDRESS_MASK;
-	 228         mask64 = (u32)PCI_ROM_ADDRESS_MASK;
-	 229     }
+	 .............................................
 	 230    
 	 231     if (res->flags & IORESOURCE_MEM_64) {
 	 232         pci_read_config_dword(dev, pos + 4, &l);
@@ -502,6 +441,182 @@ PCI设备中一般都带有一些RAM和ROM空间，通常的控制/状态寄存�
 <li>还有bit2为1表示采用64位地址，为0表示采用32位地址</li>
 <li>最后，bit1为1表示区间大小超过1mb，为0表示区间大小在1MB一下</li>
 </ul>
+
+__pci_read_base中的line213就是从读取的组合起始地址进行解析并将结果给flag，根据上面的解释以及下列的宏定义应该很好理解。
+
+	 drivers/pci/probe.c
+	 126 static inline unsigned long decode_bar(struct pci_dev *dev, u32 bar)
+	 127 {  
+	 128     u32 mem_type;
+	 129     unsigned long flags;
+	 130    
+	 131     if ((bar & PCI_BASE_ADDRESS_SPACE) == PCI_BASE_ADDRESS_SPACE_IO) {
+	 132         flags = bar & ~PCI_BASE_ADDRESS_IO_MASK;
+	 133         flags |= IORESOURCE_IO;
+	 134         return flags;
+	 135     }
+	 136    
+	 137     flags = bar & ~PCI_BASE_ADDRESS_MEM_MASK;
+	 138     flags |= IORESOURCE_MEM;
+	 139     if (flags & PCI_BASE_ADDRESS_MEM_PREFETCH)
+	 140         flags |= IORESOURCE_PREFETCH;
+	 141    
+	 142     mem_type = bar & PCI_BASE_ADDRESS_MEM_TYPE_MASK;
+	 143     switch (mem_type) {
+	 144     case PCI_BASE_ADDRESS_MEM_TYPE_32:
+	 145         break;
+	 146     case PCI_BASE_ADDRESS_MEM_TYPE_1M:
+	 147         /* 1M mem BAR treated as 32-bit BAR */
+	 148         break;
+	 149     case PCI_BASE_ADDRESS_MEM_TYPE_64:
+	 150         flags |= IORESOURCE_MEM_64;
+	 151         break;
+	 152     default:
+	 153         /* mem unknown type treated as 32-bit BAR */
+	 154         break;
+	 155     }
+	 156     return flags;
+	 157 }
+	 //include/uapi/linux/pci_regs.h
+	 91 #define  PCI_BASE_ADDRESS_SPACE     0x01    /* 0 = memory, 1 = I/O */ 
+	 92 #define  PCI_BASE_ADDRESS_SPACE_IO  0x01
+	 93 #define  PCI_BASE_ADDRESS_SPACE_MEMORY  0x00
+	 94 #define  PCI_BASE_ADDRESS_MEM_TYPE_MASK 0x06
+	 95 #define  PCI_BASE_ADDRESS_MEM_TYPE_32   0x00    /* 32 bit address */
+	 96 #define  PCI_BASE_ADDRESS_MEM_TYPE_1M   0x02    /* Below 1M [obsolete] */
+	 97 #define  PCI_BASE_ADDRESS_MEM_TYPE_64   0x04    /* 64 bit address */
+	 98 #define  PCI_BASE_ADDRESS_MEM_PREFETCH  0x08    /* prefetchable? */
+	 99 #define  PCI_BASE_ADDRESS_MEM_MASK  (~0x0fUL)
+	100 #define  PCI_BASE_ADDRESS_IO_MASK   (~0x03UL)
+
+回到__pci_read_base()中，接下来line214～line223就是通过对flag来区分是I/O区间，还是存储器区间，并分别取得开始地址和大小。line231～line241，如果是64地址的存储区间，还需要读下一个配置寄存器。line248，根据规则对空大小的值进行换算，得到真实的空间大小，调用函数pci_size（），有兴趣的可以自己分析下。到line277～line281就将开始地址和大小记录到pci_dev相应的resource[]中，还涉及到桥窗口的设置。最后如果是64位地址空间就需要返回1通知上层调用跳过一个寄存器。回到pci_read_base()中就能看出来。完成常规的6个存储区外，设备上还可能提供一个扩充的ROM区间，见pci_read_base()中line324，这里就不讨论了。
+
+再次回到上面的pci_setup_device（）中的line1153，继续读取配置空间，获取子系统号和子系统厂商号，对pci_dev进行配置。line1162，如果是IDE的存储设备进行特殊的配置。
+
+	1162         if (class == PCI_CLASS_STORAGE_IDE) {
+	1163             u8 progif;
+	1164             pci_read_config_byte(dev, PCI_CLASS_PROG, &progif);
+	1165             if ((progif & 1) == 0) {
+	1166                 region.start = 0x1F0;
+	1167                 region.end = 0x1F7;
+	1168                 res = &dev->resource[0];
+	1169                 res->flags = LEGACY_IO_RESOURCE;
+	1170                 pcibios_bus_to_resource(dev->bus, res, &region);
+	1171                 dev_info(&dev->dev, "legacy IDE quirk: reg 0x10: %pR\n",
+	1172                      res);
+	1173                 region.start = 0x3F6;
+	1174                 region.end = 0x3F6;
+	1175                 res = &dev->resource[1];
+	1176                 res->flags = LEGACY_IO_RESOURCE;
+	1177                 pcibios_bus_to_resource(dev->bus, res, &region);
+	1178                 dev_info(&dev->dev, "legacy IDE quirk: reg 0x14: %pR\n",
+	1179                      res);
+	1180             }
+	1181             if ((progif & 4) == 0) {
+	1182                 region.start = 0x170;
+	1183                 region.end = 0x177;
+	1184                 res = &dev->resource[2];
+	1185                 res->flags = LEGACY_IO_RESOURCE;
+	1186                 pcibios_bus_to_resource(dev->bus, res, &region);
+	1187                 dev_info(&dev->dev, "legacy IDE quirk: reg 0x18: %pR\n",
+	1188                      res);
+	1189                 region.start = 0x376;
+	1190                 region.end = 0x376;
+	1191                 res = &dev->resource[3];
+	1192                 res->flags = LEGACY_IO_RESOURCE;
+	1193                 pcibios_bus_to_resource(dev->bus, res, &region);
+	1194                 dev_info(&dev->dev, "legacy IDE quirk: reg 0x1c: %pR\n",
+	1195                      res);
+	1196             }
+	1197         }
+	1198         break;
+
+到此就处理完正常头部类型了，接下来就是桥的头部类型处理：
+
+	1200     case PCI_HEADER_TYPE_BRIDGE:            /* bridge header */
+	1201         if (class != PCI_CLASS_BRIDGE_PCI)
+	1202             goto bad;
+	1203         /* The PCI-to-PCI bridge spec requires that subtractive
+	1204            decoding (i.e. transparent) bridge must have programming
+	1205            interface code of 0x01. */
+	1206         pci_read_irq(dev);
+	1207         dev->transparent = ((dev->class & 0xff) == 1);
+	1208         pci_read_bases(dev, 2, PCI_ROM_ADDRESS1);
+	1209         set_pcie_hotplug_bridge(dev);
+	1210         pos = pci_find_capability(dev, PCI_CAP_ID_SSVID);
+	1211         if (pos) {
+	1212             pci_read_config_word(dev, pos + PCI_SSVID_VENDOR_ID, &dev->subsystem_vendor);
+	1213             pci_read_config_word(dev, pos + PCI_SSVID_DEVICE_ID, &dev->subsystem_device);
+	1214         }
+	1215         break;
+
+对PCI-PCI桥设备的处理就比较简单了，许多字段，如中断请求等对PCI桥设备没有意义，调用pci_read_base（），可以看到PCI桥设备的存储区间比较少，就两个。当然如果是桥设备，还要下一层PCI总线的扫描，不过这个工作在后面进行，具体是哪里呢？就是在pci_scan_child_bus（）中了，可以先看下：
+
+	//drivers/pci/probe.c     pci_scan_child_bus(struct pci_bus *bus)
+	1854     for (pass = 0; pass < 2; pass++)
+	1855         list_for_each_entry(dev, &bus->devices, bus_list) {
+	1856             if (pci_is_bridge(dev))
+	1857                 max = pci_scan_bridge(bus, dev, max, pass);
+	1858         }  
+
+到此为之，我们已经发现了一个设备，并以前将对应的pci_dev准备好了，这下终于可以返回了：
+
+		pci_setup_device()
+	        |
+	        |
+	        |  return 0,1
+	     pci_scan_device()
+	     |
+	     |
+	     |   return pri_dev *
+	  pci_scan_single_device()
+
+pci_scan_single_device()调用pci_device_add(dev, bus)来将pci_dev串到根总线的bus->devices链表中，其中还调用了device_add(&dev->dev)将device“注册到系统中”，这里就涉及到了linux的驱动模型，我们在以后详细讨论。
+
+所有这些工作结束后，就返回到pci_scan_slot中了，继续扫描插槽中的其他功能（逻辑设备），扫描完一个插槽后，返回到pci_scan_child_bus，继续扫描其他插槽。这样就完成了根总线的扫描和设备配置任务。接下来就是探测次层总线啦！！下回分解。
+
+
+！！！！！！！！！这里涉及到一个设备fixup的问题，就不讨论了！！！！！！！！！！！！！！！！
+
+因为函数调用关系比较复杂，我们来整理下：
+
+	pci_subsys_init()	//subsys_initcall()（arch/x86/pci/legacy.c）
+	  |
+	  |
+	  pci_legacy_init()	//做了主要的一些工作（arch/x86/pci/legacy.c）
+	    |
+	    |
+	    pcibios_scan_root()  //（arch/x86/pci/common.c）
+	      |
+	      |
+	      pci_scan_root_bus()	//分配根总线结构和扫描根总线（drivers/pci/probe.c）
+	        |
+	        |
+	        pci_create_root_bus()   //为根总线分配结构，以及host桥设备。注意这里的设备注册(*)。
+	        |
+	        |
+	        pci_scan_child_bus()    //扫描总线
+	       	|  |			//利用for循环扫描所有的插槽
+	        |  |			// for (devfn = 0; devfn < 0x100; devfn += 8)
+	        |  pci_scan_slot()	//扫描一个插槽中的所有子功能（逻辑设备）
+	        |  | |			//利用for循环扫描所有子功能
+	        |  | |	
+	        |  | pci_scan_single_device()  //主要调用pci_scan_device探测并配置一个逻辑设备
+	        |  |   |
+	        |  |   |
+	        |  |   pci_scan_device（）     //通过读写配置寄存器探测并配置一个逻辑设备的pci_dev结构
+	        |  |     |		      //主要设计到厂商号，flags，功能号，resource等等
+	        |  |     |		      //主要工作还是pci_setup_device来做
+	        |  |	pci_setup_device（）  //读写配置空间，对不同头类型进行分配处理，设置pci_dev结构
+	        |  |     |
+	        |  |	 | return
+	        |  |   pci_device_add()	      //将pci_dev设备关联到bus，”注册“pci_dev->device等（*）
+	        |  |
+	        |  pci_scan_bridge()	      //扫描次层总线
+	        |
+	        pci_bus_add_devices()         //？？？！！！好像跟寻找驱动有关？？ 在这里才将dev->added置位
+
+*为涉及到驱动模型的东西，以后会才分析。
 ##参考目录
 [1]《Linux内核情景分析》[中]毛德操等 [著]
 
