@@ -5,7 +5,7 @@
     * Author:         BeiYuu
     -->
     <meta charset="utf-8" />
-    <title>2015年第一发，不FQ下AOSP(为了百度TAG:Android源代码国内镜像) | maxwellxxx's Blog</title>
+    <title>Linux设备驱动模型及其他(7) | maxwellxxx's Blog</title>
     <meta name="author" content="MaxWellxxx" />
     <meta name="renderer" content="webkit">
     <meta name="description" content="MaxWellxxx's Blog" />
@@ -41,53 +41,32 @@
 
 <div id="content">
     <div class="entry">
-        <h1 class="entry-title"><a href="/AOSP" title="2015年第一发，不FQ下AOSP(为了百度TAG:Android源代码国内镜像)">2015年第一发，不FQ下AOSP(为了百度TAG:Android源代码国内镜像)</a></h1>
-        <p class="entry-date">2015-01-10</p>
-        <h2>WALL</h2>
+        <h1 class="entry-title"><a href="/DevAndDriver7" title="Linux设备驱动模型及其他(7)">Linux设备驱动模型及其他(7)</a></h1>
+        <p class="entry-date">2015-07-30</p>
+        <blockquote><p>上章讲到完成了根总线以及次层总线的扫描，并为所有pci设备完成了分配结构和串联等工作</p></blockquote>
 
-<p>最近看linux带着研究下android的内核改变。还有就是把手里的M7用sunshine s-off了，花了25$.刷了GPE，打算开始好好折腾。既然要折腾就得下个AOSP……然后，撞墙了。</p>
+<h2>PCI设备中断和地址映射配置</h2>
 
-<h2>BATTLE</h2>
+<p>从这里开始就要统筹地进行对设备的设置了。这种设置包括两个方面：</p>
 
-<p>其他的不闹了，简单粗暴：</p>
+<ul>
+<li>1.设备的中断请求线与系统中断控制器之间的连接.</li>
+<li>2.设备上各个区间在总线上的地址映射.</li>
+</ul>
 
-<p>android镜像1</p>
 
-<pre><code>http://git.omapzoom.org/platform/manifest   速度不怎么样....
-</code></pre>
+<p>也就是从前需要通过跳线设置的两个内容。不过，实际上很可能BIOS已经在系统加电自检的阶段就完成了设置，所以这里往往只是加以确认。</p>
 
-<p>android镜像1</p>
+<p>另外，系统中除了0号总线之外可能还存在其他的主总线，也要加以扫描，但是出于效率的考虑，这种扫描要推迟到处理中断请求先才进行。</p>
 
-<pre><code>https://android.git.linaro.org          速度不怎么样....
-</code></pre>
+<h2>参考目录</h2>
 
-<h2>TUNA</h2>
+<p>[1]《Linux内核情景分析》[中]毛德操等 [著]</p>
 
-<p>清华大学 android源代码
-仓库地址：</p>
-
-<pre><code>git://aosp.tuna.tsinghua.edu.cn/android/
-</code></pre>
-
-<p>使用浏览器访问：</p>
-
-<pre><code>http://aosp.tuna.tsinghua.edu.cn/android/
-http://aosp.tuna.tsinghua.edu.cn/
-</code></pre>
-
-<h2>FOR ME</h2>
-
-<p>android中古版本目录详细分析</p>
-
-<pre><code>http://www.cnblogs.com/yyangblog/archive/2011/03/02/1968880.html 目录详解
-</code></pre>
-
-<h2>ENEN</h2>
-
-<p>最后，不得不说，清华是个好大学！IPV6速度简直飞起来!</p>
+<p>[2]《深入Linux内核架构》[德]Wolfgang Mauerer 著 [中]郭旭 译</p>
 
 <!-- 多说评论框 start -->
-	<div class="ds-thread" data-thread-key="2015年第一发，不FQ下AOSP(为了百度TAG:Android源代码国内镜像)" data-title="2015年第一发，不FQ下AOSP(为了百度TAG:Android源代码国内镜像)" data-url="/AOSP"></div>
+	<div class="ds-thread" data-thread-key="Linux设备驱动模型及其他(7)" data-title="Linux设备驱动模型及其他(7)" data-url="/DevAndDriver7"></div>
 <!-- 多说评论框 end -->
 <!-- 多说公共JS代码 start (一个网页只需插入一次) -->
 <script type="text/javascript">

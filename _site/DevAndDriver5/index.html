@@ -45,7 +45,7 @@
         <p class="entry-date">2015-07-30</p>
         <blockquote><p>上章讲到根总线结构的初始化</p></blockquote>
 
-<h2>扫描根总线（枚举与配置设备）</h2>
+<h2>扫描根总线（枚举设备）</h2>
 
 <p>这里首先回顾下pci子系统初始化来的函数调用流程：</p>
 
@@ -662,17 +662,20 @@
         |  |   pci_scan_device（）     //通过读写配置寄存器探测并配置一个逻辑设备的pci_dev结构
         |  |     |            //主要设计到厂商号，flags，功能号，resource等等
         |  |     |            //主要工作还是pci_setup_device来做
-        |  |    pci_setup_device（）  //读写配置空间，对不同头类型进行分配处理，设置pci_dev结构
+        |  |     pci_setup_device（）  //读写配置空间，对不同头类型进行分配处理，设置pci_dev结构
         |  |     |
         |  |     | return
         |  |   pci_device_add()       //将pci_dev设备关联到bus，”注册“pci_dev-&gt;device等（*）
+        |  |     |
+        |  |     |
+        |  |     device_add(&amp;dev-&gt;dev) //!!!!!非常重要（**）
         |  |
         |  pci_scan_bridge()          //扫描次层总线
         |
-        pci_bus_add_devices()         //？？？！！！好像跟寻找驱动有关？？ 在这里才将dev-&gt;added置位
+        pci_bus_add_devices()         //？？？！！！好像跟寻找驱动有关？？ 在这里才将dev-&gt;added置位(****)
 </code></pre>
 
-<p>*为涉及到驱动模型的东西，以后会才分析。</p>
+<p>带*为涉及到驱动模型的东西，是非常重要的东西，这里是提醒自己不要忘记，以后会分析。</p>
 
 <h2>参考目录</h2>
 
@@ -720,6 +723,8 @@ var duoshuoQuery = {short_name:"maxwellxxx"};
 
         <h2>My Manual</h2>
         <ul class="artical-list">
+        
+            <li><a href="/DevAndDriver7">Linux设备驱动模型及其他(7)</a></li>
         
             <li><a href="/DevAndDriver6">Linux设备驱动模型及其他(6)</a></li>
         
