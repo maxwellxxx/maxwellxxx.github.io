@@ -13,7 +13,6 @@ category: manual
 首先来看几个底层的函数，也就是通过寄存器0xCF8和0xCFC读写目标设备上的配置寄存器，首先来看到
 
 	arch/x86/pci/init.c:
-	  7    in the right sequence from here. */
 	  8 static __init int pci_arch_init(void)
 	  9 {
 	 10 #ifdef CONFIG_PCI_DIRECT

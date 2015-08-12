@@ -73,7 +73,7 @@ category: manual
 关于do_initcalls()其实还大有学问，但这里不是我们讨论的重点，以后说不定会总结下，如果想了解，可以看这里：<a href="http://blog.csdn.net/ericghw/article/details/8302689">linux initcall机制</a>。言归正传，do_initcalls()自然会调用到上面的函数，那这个函数具体是在做神马咧？
 
 
-先看10行的CONFIG_PCI_DIRECT，第一篇就说明了,Linux可以在编译时选择这个选项，来绕过BIOS的PCI服务，就体现在这里啦！！进而调用pci_direct_probe()，这个函数也很重要，里面有上篇文章一个问题的答案：
+先看10行的CONFIG_PCI_DIRECT，第一篇就说明了,Linux可以在编译时选择这个选项，来绕过BIOS的PCI服务，就体现在这里啦！！不过请注意，CONFIG_PCI_DIRECT和CONFIG_PCI_BIOS并不是互斥的，可以先通过BIOS来尝试探测，如果不成功再由内核亲自完成工作。这里我们不看BIOS相关的。进而调用pci_direct_probe()，这个函数也很重要，里面有上篇文章一个问题的答案：
 
 	arch/x86/pci/direct.c
 	283 int __init pci_direct_probe(void)
