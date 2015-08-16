@@ -225,7 +225,7 @@
   85 }  
 </code></pre>
 
-<p>可以看到，实际就是以16字节为步长，在BIOS内存空间去匹配irq_routing_table的前两个固定成员，如果匹配到，就肯定就是要找的“中断路径表”。并使内核全局指针pirq_table指向该表。找到这张表后，就要对齐进行进一步的处理了，在pcibios_irq_init中调用pirq_peer_trick:</p>
+<p>可以看到，实际就是以16字节为步长，在BIOS内存空间去匹配irq_routing_table的前两个固定成员，如果匹配到，就肯定就是要找的“中断路径表”。并使内核全局指针pirq_table指向该表。找到这张表后，就要对它进行进一步的处理了，在pcibios_irq_init中调用pirq_peer_trick:</p>
 
 <pre><code> //arch/x86/pci/irq.c 
  112 /*  
@@ -315,6 +315,110 @@
  861     /* The device remains referenced for the kernel lifetime */
  862 }  
 </code></pre>
+
+<p>首先通过“中断请求路径表”的头部记录的信息，利用pci_get_bus_and_slot来找到其pci_dev结构赋给全局变量pirq_router_dev，如果找不到就歇菜了。</p>
+
+<p>中断路径互连器由一个irq_router的数据结构来表示，结构中的函数指针get和set用于读出和改变芯片中的互连，不同芯片可能由不同的get和set函数。PC机中可能采用的此类芯片有好几种，内核中定义了一个irq_router_handler结构的数组pirq_routers[]，里面包括了各种常用的芯片以及其probe函数。</p>
+
+<pre><code> //arch/x86/pci/irq.c 
+ 43 struct irq_router { 
+ 44     char *name;
+ 45     u16 vendor, device;
+ 46     int (*get)(struct pci_dev *router, struct pci_dev *dev, int pirq);
+ 47     int (*set)(struct pci_dev *router, struct pci_dev *dev, int pirq,
+ 48         int new);
+ 49 }; 
+
+ 51 struct irq_router_handler { 
+ 52     u16 vendor;
+ 53     int (*probe)(struct irq_router *r, struct pci_dev *router, u16 device);
+ 54 }; 
+
+ 794 static __initdata struct irq_router_handler pirq_routers[] = {  
+ 795     { PCI_VENDOR_ID_INTEL, intel_router_probe },
+ 796     { PCI_VENDOR_ID_AL, ali_router_probe },
+ 797     { PCI_VENDOR_ID_ITE, ite_router_probe },
+ 798     { PCI_VENDOR_ID_VIA, via_router_probe },
+ 799     { PCI_VENDOR_ID_OPTI, opti_router_probe },
+ 800     { PCI_VENDOR_ID_SI, sis_router_probe },
+ 801     { PCI_VENDOR_ID_CYRIX, cyrix_router_probe },
+ 802     { PCI_VENDOR_ID_VLSI, vlsi_router_probe },
+ 803     { PCI_VENDOR_ID_SERVERWORKS, serverworks_router_probe },
+ 804     { PCI_VENDOR_ID_AMD, amd_router_probe },
+ 805     { PCI_VENDOR_ID_PICOPOWER, pico_router_probe },
+ 806     /* Someone with docs needs to add the ATI Radeon IGP */
+ 807     { 0, NULL }
+ 808 }; 
+</code></pre>
+
+<p>回到pirq_find_router()中，根据pirq_table中的vendor就可以去pirq_routers去匹配想要的“驱动”了，匹配工作具体由pirq_routers中的probe来完成，代码很好理解，就是通过对Device ID的判断来完成对irq_router结构的初始化，下面代码摘自intel_router_probe：</p>
+
+<pre><code> arch/x86/pci/irq.c
+ 537 static __init int intel_router_probe(struct irq_router *r, struct pci_dev *r
+ 538 {
+ 539     static struct pci_device_id __initdata pirq_440gx[] = {
+ 540         { PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_82443GX_0) },
+ 541         { PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_82443GX_2) },
+ 542         { },
+ 543     };
+ 544    
+ 545     /* 440GX has a proprietary PIRQ router -- don't use it */
+ 546     if (pci_dev_present(pirq_440gx))
+ 547         return 0;
+ 548    
+ 549     switch (device) {
+ 550     case PCI_DEVICE_ID_INTEL_82371FB_0:
+ 551     case PCI_DEVICE_ID_INTEL_82371SB_0:
+ 552     case PCI_DEVICE_ID_INTEL_82371AB_0:
+ ..............
+ 590     case PCI_DEVICE_ID_INTEL_PATSBURG_LPC_1:
+ 591         r-&gt;name = "PIIX/ICH";
+ 592         r-&gt;get = pirq_piix_get;
+ 593         r-&gt;set = pirq_piix_set;
+ 594         return 1;
+ 595     }
+ 596 
+ 597     if ((device &gt;= PCI_DEVICE_ID_INTEL_5_3400_SERIES_LPC_MIN &amp;&amp; 
+ 598          device &lt;= PCI_DEVICE_ID_INTEL_5_3400_SERIES_LPC_MAX) 
+ 599     ||  (device &gt;= PCI_DEVICE_ID_INTEL_COUGARPOINT_LPC_MIN &amp;&amp; 
+ 600          device &lt;= PCI_DEVICE_ID_INTEL_COUGARPOINT_LPC_MAX)
+ 601     ||  (device &gt;= PCI_DEVICE_ID_INTEL_DH89XXCC_LPC_MIN &amp;&amp;
+ 602          device &lt;= PCI_DEVICE_ID_INTEL_DH89XXCC_LPC_MAX)
+ 603     ||  (device &gt;= PCI_DEVICE_ID_INTEL_PANTHERPOINT_LPC_MIN &amp;&amp;
+ 604          device &lt;= PCI_DEVICE_ID_INTEL_PANTHERPOINT_LPC_MAX)) {
+ 605         r-&gt;name = "PIIX/ICH";
+ 606         r-&gt;get = pirq_piix_get;
+ 607         r-&gt;set = pirq_piix_set;
+ 608         return 1;
+ 609     }
+ 610     
+ 611     return 0;
+ 612 }   
+</code></pre>
+
+<p>上面代码就将中断路径互连器irq_router结构的get和set分别设置为相应的函数。这些都结束后就回到pcibios_irq_init中，先来看其中的line1132～line1147.</p>
+
+<pre><code>1132     if (pirq_table) {
+1133         pirq_peer_trick();
+1134         pirq_find_router(&amp;pirq_router);
+1135         if (pirq_table-&gt;exclusive_irqs) {
+1136             int i;
+1137             for (i = 0; i &lt; 16; i++)
+1138                 if (!(pirq_table-&gt;exclusive_irqs &amp; (1 &lt;&lt; i)))
+1139                     pirq_penalty[i] += 100;
+1140         }
+1141         /*
+1142          * If we're using the I/O APIC, avoid using the PCI IRQ
+1143          * routing table
+1144          */
+1145         if (io_apic_assign_pci_irqs)
+1146             pirq_table = NULL;
+1147     }
+</code></pre>
+
+<p>在中断路径表pirq_table中还有个位图exclusive_irqs，位图中为1的位表示中断控制器的相应输入应该专用，而避免为多个中断源共用。所以对于这些中断请求输入线，代码中在一个数组pirq_penalty[]的相应元素上增加一个惩罚量“100”，使得中断路径互连时不太会选择这些作为对象。</p>
+
+<p>还有个问题，看line1145，中断路径互连器仅在采用8259A中断控制器时才会使用，如果系统采用的时“高级可编程中断控制器”APIC，那么就需要把pirq_table设为NULL，因为APIC本身就是“可编程”的。</p>
 
 <h2>参考目录</h2>
 
