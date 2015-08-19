@@ -45,7 +45,7 @@
         <p class="entry-date">2015-07-30</p>
         <blockquote><p>上章讲到完成了根总线以及次层总线的扫描，并为所有pci设备完成了分配结构和串联等工作</p></blockquote>
 
-<h2>PCI设备中断和地址映射配置</h2>
+<h2>PCI设备中断</h2>
 
 <p>从这里开始就要统筹地进行对设备的设置了。这种设置包括两个方面：</p>
 
@@ -91,6 +91,7 @@
  //arch/x86/include/asm/pci_x86.h  
  204 # define x86_default_pci_init_irq   pcibios_irq_init  
 
+// arch/x86/pci/irq.c 
 1117 void __init pcibios_irq_init(void)
 1118 {  
 1119     DBG(KERN_DEBUG "PCI: IRQ init\n");
@@ -174,7 +175,7 @@
 
 <p>“中断请求路径表”的第一个个长字一定是一个特殊的值PIRQ_SIGNATURE，版本号必须为PIRQ_VERSION。这两个值其实是为了可以从内存中扫描到这张表。“路径表”的起点一定是与16字节边界对齐，但是不在固定的位置上，所以需要扫描寻找。而其实irq_routing_table只是“中断请求路径表”的头部，表的主体slots是一个irq_info结构数组。</p>
 
-<p>对于系统中每条PCI总线上的每个模块，路径表中都有一个对应的irq_info结构。结构中给出了其4条中断请求线与路径互连器输入线的连接，同时还有个位图，说明了可供选择的连接对象，即中断控制器的各条输入线。</p>
+<p>对于系统中每条PCI总线上的每个模块(插槽)，路径表中都有一个对应的irq_info结构。结构中给出了其4条中断请求线与路径互连器输入线的连接，同时还有个位图，说明了可供选择的连接对象，即中断控制器的各条输入线。</p>
 
 <p>在pcibios_irq_init首先通过调用pirq_find_routing_table（）在BIOS所在的内存区间扫描，以找到中断请求路径表，并将其指针给全局变量pirq_table。</p>
 
@@ -418,7 +419,7 @@
 
 <p>在中断路径表pirq_table中还有个位图exclusive_irqs，位图中为1的位表示中断控制器的相应输入应该专用，而避免为多个中断源共用。所以对于这些中断请求输入线，代码中在一个数组pirq_penalty[]的相应元素上增加一个惩罚量“100”，使得中断路径互连时不太会选择这些作为对象。</p>
 
-<p>还有个问题，看line1145，中断路径互连器仅在采用8259A中断控制器时才会使用，如果系统采用的时“高级可编程中断控制器”APIC，那么就需要把pirq_table设为NULL，因为APIC本身就是“可编程”的。</p>
+<p>还有个问题，看line1145，中断路径互连器仅在采用8259A中断控制器时才会使用，如果系统采用的时“高级可编程中断控制器”APIC，那么就需要把pirq_table设为NULL，因为APIC本身就是“可编程”的。接下就调用x86_init.pci.fixup_irqs()来进行有关中断请求路径互连了。下篇见！</p>
 
 <h2>参考目录</h2>
 
@@ -466,6 +467,8 @@ var duoshuoQuery = {short_name:"maxwellxxx"};
 
         <h2>My Manual</h2>
         <ul class="artical-list">
+        
+            <li><a href="/DevAndDriver8">Linux设备驱动模型及其他(8)</a></li>
         
             <li><a href="/DevAndDriver7">Linux设备驱动模型及其他(7)</a></li>
         

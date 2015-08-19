@@ -42,7 +42,8 @@ category: manual
 
 	 //arch/x86/include/asm/pci_x86.h  
  	 204 # define x86_default_pci_init_irq   pcibios_irq_init  
-
+	
+	// arch/x86/pci/irq.c 
 	1117 void __init pcibios_irq_init(void)
 	1118 {  
 	1119     DBG(KERN_DEBUG "PCI: IRQ init\n");
@@ -124,7 +125,7 @@ category: manual
 
 “中断请求路径表”的第一个个长字一定是一个特殊的值PIRQ_SIGNATURE，版本号必须为PIRQ_VERSION。这两个值其实是为了可以从内存中扫描到这张表。“路径表”的起点一定是与16字节边界对齐，但是不在固定的位置上，所以需要扫描寻找。而其实irq_routing_table只是“中断请求路径表”的头部，表的主体slots是一个irq_info结构数组。
 
-对于系统中每条PCI总线上的每个模块，路径表中都有一个对应的irq_info结构。结构中给出了其4条中断请求线与路径互连器输入线的连接，同时还有个位图，说明了可供选择的连接对象，即中断控制器的各条输入线。
+对于系统中每条PCI总线上的每个模块(插槽)，路径表中都有一个对应的irq_info结构。结构中给出了其4条中断请求线与路径互连器输入线的连接，同时还有个位图，说明了可供选择的连接对象，即中断控制器的各条输入线。
 
 在pcibios_irq_init首先通过调用pirq_find_routing_table（）在BIOS所在的内存区间扫描，以找到中断请求路径表，并将其指针给全局变量pirq_table。
 
