@@ -7,7 +7,7 @@ category: manual
 
 >上章讲到根总线结构的初始化
 
-##扫描根总线（枚举与配置设备）
+##扫描根总线（枚举设备）
 这里首先回顾下pci子系统初始化来的函数调用流程：
 
 	pci_subsys_init()	//subsys_initcall()（arch/x86/pci/legacy.c）

@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <!--
+    * Author:         BeiYuu
+    -->
+    <meta charset="utf-8" />
+    <title>Linux设备驱动模型及其他(9) | maxwellxxx's Blog</title>
+    <meta name="author" content="MaxWellxxx" />
+    <meta name="renderer" content="webkit">
+    <meta name="description" content="MaxWellxxx's Blog" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0">
+    <link rel="stylesheet" href="/css/default.css" type="text/css" />
+    <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
+    <link rel="alternate" type="application/atom+xml" title="Recent Entries" href="/atom.xml" />
+    <script src="/js/jquery-1.7.1.min.js" type="text/javascript"></script>
+</head>
+<body>
+
+    <div class="home-menu">
+        <div class="home-icon-con">
+            <a class="home-menu-icon" href="/">MaxWellxxx</a>
+            <a class="home-follow" href="#" title="Contact Me">+</a>
+        </div>
+        <div class="home-contact">
+            <a href="http://weibo.com/u/1863312387" target="_blank" style="margin-left:-5px;"><img src="http://www.weibo.com/favicon.ico" alt="" width="25"/></a>
+        </div>
+    </div>
+
+    <link rel="stylesheet" href="/js/prettify/prettify.css" />
+<link href="/assets/themes/fancyBox/jquery.fancybox.css?v=2.1.5" rel="stylesheet" media="all" />
+<style type="text/css">
+    body { background:#e8e8e8; }
+    @media screen and (max-width: 1000px){
+        body { background:#fff; }
+    }
+    @media screen and (max-width: 1020px){
+        body { background:#fff; }
+    }
+</style>
+
+<div id="content">
+    <div class="entry">
+        <h1 class="entry-title"><a href="/DevAndDriver9" title="Linux设备驱动模型及其他(9)">Linux设备驱动模型及其他(9)</a></h1>
+        <p class="entry-date">2015-07-30</p>
+        <blockquote><p>上章讲到我们已经高清了有BIOS配置好的设备的中断请求去向。</p></blockquote>
+
+<h2>PCI设备地址空间&amp;总线地址</h2>
+
+<p>弄清了中断请求的去向，下面就要为各个PCI设备中的各个地址区间分配总线地址，并设置好各个PCI设备对这些区间（到总线地址）的映射了。前面在枚举设备的时候已经看到，每个PCI设备都通过配置寄存器组提供其各个区间的起始地址和区间大小，但是这些可能是设备内部的地址，或者是由BIOS分配的总线地址。对于两种情况要分别处理。</p>
+
+<ul>
+<li>
+如果是内部地址，就需要在一个统一的总线地址空间为这些区间分配地址并建立映射。
+</li>
+<li>
+如果是由BIOS分配的总线地址，就需要对其进行验证，并建立相关的数据结构。
+</li>
+</ul>
+
+
+<p>对CPU来说，总线地址相当于物理地址，在此之后还要在这基础上再加上一层映射，将虚拟地址映射到总线地址。在分配过程中，只要原来已经分配的地址可用，就尽量维持原状，对这些地址只要验证一下，并为之建立相应的数据结构。那么，什么样的地址是不可用需要重新分配的呢？主要有两种情况：</p>
+
+<ul>
+<li>
+系统在初始化后，已经将物理地址的低端的一大块分配给了内核本身，这些地址当然不能用于PCI总线，而设备的内部的地址都在低端，因此需要重新分配。
+</li>
+<li>
+PCI设备各个区间不允许互相冲突，如果发生冲突，也要做出调整。I/O地址也是一样的。
+</li>
+</ul>
+
+
+<p>对于存储器和I/O两种地址的资源管理，内核中有一套资源管理机制，每一个逻辑上独立的连续地址区间都由一个resource数据结构代表，这个数据结构我们以前已经有过接触了。</p>
+
+<pre><code> //include/linux/ioport.h
+ 14 /*
+ 15  * Resources are tree-like, allowing
+ 16  * nesting etc..
+ 17  */
+ 18 struct resource {
+ 19     resource_size_t start;
+ 20     resource_size_t end;
+ 21     const char *name;
+ 22     unsigned long flags;
+ 23     struct resource *parent, *sibling, *child;
+ 24 };
+</code></pre>
+
+<p>结构中的start和end表示该区间的地址范围，flags表示区间的性质，比如是memory还是I/O地址。指针child，sibling和parent则用来维系可以上下两个方向攀援的树形结构。每个区间（的resource结构）都通过指针child只想其第一个子区间，而同区间的所有子区间都通过指针sibling形成一个单链接，并都通过指针parent指向其父区间。</p>
+
+<p>我们在第四篇讲过，在创建主PCI总线时，在pci_bus结构中对resources链表添加了两个resource，分别是：</p>
+
+<pre><code>  //kernel/resource.c
+  28 struct resource ioport_resource = { 
+  29     .name   = "PCI IO",
+  30     .start  = 0, 
+  31     .end    = IO_SPACE_LIMIT,
+  32     .flags  = IORESOURCE_IO, 
+  33 }; 
+  34 EXPORT_SYMBOL(ioport_resource); 
+  35 
+  36 struct resource iomem_resource = {
+  37     .name   = "PCI mem", 
+  38     .start  = 0,
+  39     .end    = -1,
+  40     .flags  = IORESOURCE_MEM,
+  41 };
+  42 EXPORT_SYMBOL(iomem_resource);
+</code></pre>
+
+<p>表示如果要使用I/O地址区间就从ioport_resource中分配，使用内存地址区间就从iomem_resource分配。不过系统在初始化阶段已经从这两个空间分配了许多资源，所以已经不再是像它们初值所表示的整个I/O地址空间或者整个内存地址空间了。</p>
+
+<p>对总线地址的确认和分配是由pcibios_resource_survey()完成的，调用关系和代码如下：</p>
+
+<pre><code>pci_subsys_init（）（subsys_initcall）
+  |
+  |
+  pcibios_init()
+    |
+    |
+     pcibios_resource_survey();
+
+
+//arch/x86/pci/i386.c 
+387 void __init pcibios_resource_survey(void)
+388 { 
+389     struct pci_bus *bus;
+390 
+391     DBG("PCI: Allocating resources\n");
+392 
+393     list_for_each_entry(bus, &amp;pci_root_buses, node)
+394         pcibios_allocate_bus_resources(bus);
+395 
+396     list_for_each_entry(bus, &amp;pci_root_buses, node)
+397         pcibios_allocate_resources(bus, 0);
+398     list_for_each_entry(bus, &amp;pci_root_buses, node)
+399         pcibios_allocate_resources(bus, 1);
+400 
+401     e820_reserve_resources_late();
+402     /*
+403      * Insert the IO APIC resources after PCI initialization has
+404      * occurred to handle IO APICS that are mapped in on a BAR in
+405      * PCI space, but before trying to assign unassigned pci res.
+406      */
+407     ioapic_insert_resources();
+408 } 
+</code></pre>
+
+<p>首先通过pcibios_allocate_bus_resources（）为每条PCI总线分配地址资源，这里的pci_root_buses还记得么？它是个全局变量，系统中所有的根总线（即所有通过“HOST-PCI”桥链接的总线，通常情况下只有一条）都链接到这里。实际上就是个pci_bus结构队列cibios_allocate_bus_resources代码我们来分析下：</p>
+
+<pre><code>//arch/x86/pci/i386.c
+232 static void pcibios_allocate_bus_resources(struct pci_bus *bus)  
+233 { 
+234     struct pci_bus *child;
+235 
+236     /* Depth-First Search on bus tree */
+237     if (bus-&gt;self)
+238         pcibios_allocate_bridge_resources(bus-&gt;self);
+239     list_for_each_entry(child, &amp;bus-&gt;children, node)
+240         pcibios_allocate_bus_resources(child);
+241 } 
+</code></pre>
+
+<p>我们在前几篇讲过扫描根总线的时是递归调用pci_scan_child_bus来扫描的，它是一个深度优先的算法，会扫描根总线上所有通过“PCI—PCI”桥连接的总线。当时我们也看到过总线与总线的关系通过队列children还有指针parent来描述。而队列头children维持了次层PCI总线的pci_bus结构队列，在完成PCI总线和设备的枚举后，这些数据结构就已经构建好了。那既然PCI总线的系统结构是递归的，对整个PCI结构的资源分配就应该也是递归的。所以看这里的line239，就是对次层的pci_bus结构队列递归调用了pcibios_allocate_bus_resources，做深度优先遍历。而对于总线本身，也就相当于连接总线的PCI桥（详情见pci_bus结构定义），则用pcibios_allocate_bridge_resources来分配资源。</p>
+
+<pre><code>//arch/x86/pci/i386.c
+208 static void pcibios_allocate_bridge_resources(struct pci_dev *dev) 
+209 {
+210     int idx;
+211     struct resource *r;
+212 
+213     for (idx = PCI_BRIDGE_RESOURCES; idx &lt; PCI_NUM_RESOURCES; idx++) {
+214         r = &amp;dev-&gt;resource[idx];
+215         if (!r-&gt;flags)
+216             continue;
+217         if (r-&gt;parent)  /* Already allocated */
+218             continue;
+219         if (!r-&gt;start || pci_claim_bridge_resource(dev, idx) &lt; 0) {
+220             /*
+221              * Something is wrong with the region.
+222              * Invalidate the resource to prevent
+223              * child resource allocations in this
+224              * range.
+225              */
+226             r-&gt;start = r-&gt;end = 0;
+227             r-&gt;flags = 0;
+228         }
+229     } 
+230 } 
+</code></pre>
+
+<h2>参考目录</h2>
+
+<p>[1]《Linux内核情景分析》[中]毛德操等 [著]</p>
+
+<p>[2]《深入Linux内核架构》[德]Wolfgang Mauerer 著 [中]郭旭 译</p>
+
+<!-- 多说评论框 start -->
+	<div class="ds-thread" data-thread-key="Linux设备驱动模型及其他(9)" data-title="Linux设备驱动模型及其他(9)" data-url="/DevAndDriver9"></div>
+<!-- 多说评论框 end -->
+<!-- 多说公共JS代码 start (一个网页只需插入一次) -->
+<script type="text/javascript">
+var duoshuoQuery = {short_name:"maxwellxxx"};
+	(function() {
+		var ds = document.createElement('script');
+		ds.type = 'text/javascript';ds.async = true;
+		ds.src = (document.location.protocol == 'https:' ? 'https:' : 'http:') + '//static.duoshuo.com/embed.js';
+		ds.charset = 'UTF-8';
+		(document.getElementsByTagName('head')[0] 
+		 || document.getElementsByTagName('body')[0]).appendChild(ds);
+	})();
+	</script>
+<!-- 多说公共JS代码 end -->
+    </div>
+
+    <div class="sidenav">
+        <iframe width="100%" height="75" class="share_self"  frameborder="0" scrolling="no" src="http://widget.weibo.com/weiboshow/index.php?language=&width=0&height=75&fansRow=2&ptype=1&speed=0&skin=5&isTitle=0&noborder=0&isWeibo=0&isFans=0&uid=1863312387&verifier=996dff3a&dpc=1"></iframe>
+    </div>
+
+    <div class="sidenav">
+        <h2>Blog</h2>
+        <ul class="artical-list">
+        
+            <li><a href="/buildcm">编译完整CM至HTC ONE（m7 gsm）</a></li>
+        
+            <li><a href="/AOSP">2015年第一发，不FQ下AOSP(为了百度TAG:Android源代码国内镜像)</a></li>
+        
+            <li><a href="/pinglun">这下大家满足了吧</a></li>
+        
+            <li><a href="/yougan">我是喷子</a></li>
+        
+            <li><a href="/newstory">新的故事</a></li>
+        
+        </ul>
+
+        <h2>My Manual</h2>
+        <ul class="artical-list">
+        
+            <li><a href="/DevAndDriver9">Linux设备驱动模型及其他(9)</a></li>
+        
+            <li><a href="/DevAndDriver8">Linux设备驱动模型及其他(8)</a></li>
+        
+            <li><a href="/DevAndDriver7">Linux设备驱动模型及其他(7)</a></li>
+        
+            <li><a href="/DevAndDriver6">Linux设备驱动模型及其他(6)</a></li>
+        
+            <li><a href="/DevAndDriver5">Linux设备驱动模型及其他(5)</a></li>
+        
+            <li><a href="/DevAndDriver4">Linux设备驱动模型及其他(4)</a></li>
+        
+            <li><a href="/DevAndDriver3">Linux设备驱动模型及其他(3)</a></li>
+        
+            <li><a href="/DevAndDriver2">Linux设备驱动模型及其他(2)</a></li>
+        
+            <li><a href="/DevAndDriver1">Linux设备驱动模型及其他(1)</a></li>
+        
+            <li><a href="/linuxmemblock">Linux内核初期内存管理---memblock</a></li>
+        
+            <li><a href="/linuxearlymemory">Linux内核初始化阶段内存管理的几种阶段(1)</a></li>
+        
+            <li><a href="/linuxmemory">Linux高端内存映射等等</a></li>
+        
+            <li><a href="/linuxmemmanage">Linux初始化阶段内存管理框架初始化</a></li>
+        
+            <li><a href="/Linux-File">Linux文件I/O、系统基础编程总结</a></li>
+        
+            <li><a href="/Linux-Unix">Linux/Unix系统编程</a></li>
+        
+        </ul>
+
+        <h2>Project</h2>
+        <ul class="artical-list">
+        
+            <li><a href="/linux-swap">扩展Ubuntu Swap分区</a></li>
+        
+            <li><a href="/tinyos-ana">Tinyos概要分析</a></li>
+        
+            <li><a href="/tinyos">Ubuntu 下Tinyos开发环境的搭建</a></li>
+        
+            <li><a href="/github-pages">使用Github Pages建独立博客</a></li>
+        
+        </ul>
+    </div>
+</div>
+  
+<script src="/js/post.js" type="text/javascript"></script>
+<script type="text/javascript" src="/assets/themes/fancyBox/jquery.fancybox.pack.js?v=2.1.5"></script>
+<script>
+// 给图片添加链接
+$(document).ready(function() {
+  $("p img").each(function() {
+    var strA = "<a id='yourid' href='" + this.src + "'></a>";
+    $(this).wrapAll(strA);
+  });
+});
+
+// fancybox
+$("#yourid").fancybox({
+  openEffect    : 'elastic',
+  closeEffect   : 'elastic',
+});
+</script>
+
+
+
+    <script type="text/javascript">
+        $(function(){
+            $('.home-follow').click(function(e){
+                e.preventDefault();
+
+                if($('.home-contact').is(':visible')){
+                    $('.home-contact').slideUp(100);
+                }else{
+                    $('.home-contact').slideDown(100);
+                }
+            });
+        })
+    </script>
+</body>
+</html>
