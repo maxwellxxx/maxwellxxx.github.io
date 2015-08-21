@@ -217,7 +217,23 @@ category: manual
 	 953 }   
 	 954 EXPORT_SYMBOL(pci_scan_bridge);
 
-首先line772～line775从PCI桥的配置寄存器组中读取含有“主总线号”，“次总线号”等字段的长字，其中最低的字节为主总线号，在此之上的两个字节则依次为次总线号和子树中最大的总线号。再到line802,如果长字中较高的两个字节不全为0就进入if分支(pcibios_assign_all_busses()为空操作,返回0)。这两个字节不为0说明这条总线已经被枚举过一次，所以已经分配了次总线号和最大“子总线号”，一般而言，这发生在系统加电时有PCI BIOS进行的扫描枚举，对于这种情况，只有pass==0也就是第一趟扫描才真正执行if分支（看line809~810）。既然找到了bus就需要分配pci_bus结构等工作。可以看到调用了pci_add_new_bus()进行分配pci_bus，添加新总线，串联到父总线等等工作。
+首先line772～line775从PCI桥的配置寄存器组中读取含有“主总线号”，“次总线号”等字段的长字，其中最低的字节为主总线号，在此之上的两个字节则依次为次总线号和子树中最大的总线号。再到line802,如果长字中较高的两个字节不全为0就进入if分支(pcibios_assign_all_busses()为空操作,返回0)。这两个字节不为0说明这条总线已经被枚举过一次，所以已经分配了次总线号和最大“子总线号”，一般而言，这发生在系统加电时有PCI BIOS进行的扫描枚举，对于这种情况，只有pass==0也就是第一趟扫描才真正执行if分支（看line809~810）。既然找到了bus就需要分配pci_bus结构等工作。可以看到调用了pci_add_new_bus()进行分配pci_bus，添加新总线，串联到父总线等等工作,还有就是会将新分配pci_bus的resource[]中四个指针指向桥设备pci_dev的resource数组相应的值。
+
+	pci_add_new_bus（）
+	  |
+	  |
+	  pci_alloc_child_bus（）
+	
+	 //drivers/pci/probe.c
+	 	pci_alloc_child_bus(){
+	 708     /* Set up default resource pointers and names.. */
+	 709     for (i = 0; i < PCI_BRIDGE_RESOURCE_NUM; i++) {
+	 710         child->resource[i] = &bridge->resource[PCI_BRIDGE_RESOURCES+i];
+	 711         child->resource[i]->name = child->name;
+	 712     }
+	 713     bridge->subordinate = child;
+	}
+
 
 接下来就到了line828，因发现了新的总线，所以要对发现的次层总线进行扫描了，可以看到这里是对我们熟悉的pci_scan_child_bus（）的递归调用，因为此时CPU还在这个函数里呢。可见在对系统的PCI总线结构做深度优先的搜索。
 

@@ -8,7 +8,7 @@ category: manual
 >上章讲到我们已经高清了有BIOS配置好的设备的中断请求去向。
 
 ##PCI设备地址空间&总线地址
-弄清了中断请求的去向，下面就要为各个PCI设备中的各个地址区间分配总线地址，并设置好各个PCI设备对这些区间（到总线地址）的映射了。前面在枚举设备的时候已经看到，每个PCI设备都通过配置寄存器组提供其各个区间的起始地址和区间大小，但是这些可能是设备内部的地址，或者是由BIOS分配的总线地址。对于两种情况要分别处理。
+弄清了中断请求的去向，下面就要为各个PCI设备中的各个地址区间分配总线地址，并设置好各个PCI设备对这些区间（到总线地址）的映射了。前面在枚举设备的时候已经看到，每个PCI设备都通过配置寄存器组提供其各个区间的起始地址和区间大小,在第五篇枚举设备时，就通过pci_read_bases（）将配置寄存器中有关区间起始地址和大小的相关数据进行了处理并存放在pci_dev->resource[]数组中，但是这些可能是设备内部的地址，或者是由BIOS分配的总线地址。对于两种情况要分别处理。
 <ul>
 <li>
 如果是内部地址，就需要在一个统一的总线地址空间为这些区间分配地址并建立映射。
@@ -140,6 +140,37 @@ PCI设备各个区间不允许互相冲突，如果发生冲突，也要做出�
 	228         }
 	229     } 
 	230 } 
+
+	//include/linux/pci.h  
+	 81 enum {
+	 82     /* #0-5: standard PCI resources */
+	 83     PCI_STD_RESOURCES,
+	 84     PCI_STD_RESOURCE_END = 5,
+	 85      
+	 86     /* #6: expansion ROM resource */
+	 87     PCI_ROM_RESOURCE,		//6
+	 88      
+	 89     /* device specific resources */
+	 90 #ifdef CONFIG_PCI_IOV
+	 91     PCI_IOV_RESOURCES,
+	 92     PCI_IOV_RESOURCE_END = PCI_IOV_RESOURCES + PCI_SRIOV_NUM_BARS - 1,     
+	 93 #endif
+	 94      
+	 95     /* resources assigned to buses behind the bridge */
+	 96 #define PCI_BRIDGE_RESOURCE_NUM 4
+	 97      
+	 98     PCI_BRIDGE_RESOURCES,		//7
+	 99     PCI_BRIDGE_RESOURCE_END = PCI_BRIDGE_RESOURCES +
+	100                   PCI_BRIDGE_RESOURCE_NUM - 1,
+	101     
+	102     /* total resources associated with a PCI device */
+	103     PCI_NUM_RESOURCES,		//11
+	104     
+	105     /* preserve this for compatibility */
+	106     DEVICE_COUNT_RESOURCE = PCI_NUM_RESOURCES,
+	107 }; 	
+
+对于普通设备，它的pci_dev结构中的resource[]数组开头六个（0~5）地址区间是设备上可能有的区间，第七区（6）是可能的扩充ROM区间。如果设备是PCI桥，则后面还有4个区间，pci_bus结构中的4个resource指针就分别指向这4个区间（见第6篇）而pci桥设备中的resource也是通过pci_read_bases（）总配置寄存器中读到的。我们在第5篇已经说过，PCI桥本身并不“使用”这些区间中的地址，而是用这些区间作为地址过滤的窗口。其中第一个是I/O地址，第二个用于存储器地址，第三个为“可预取”存储器地址区间，另外还有一个用于扩充ROM区间窗口。次层总线上所有设备（包括PCI桥）所使用的地址都必须在这些窗口中，换言之，这些设备所需要的地址都要从这些区间中分配。所以，每个PCI桥或者说每条PCI总线，都需要从其上层“批发”下一些地址，然后“零售”分配给连接在这条总线上的所有设备。包括把其中的一部分比发给次层总线。就这样，每条PCI总线上的设备都向其所在的总线批发地址资源，而总线则向其上层总线批发。那么，顶层的PCI总线又向谁批发呢？那就是ioport_resource和iomem_resource,这是两种地址资源的终极来源。
 
 ##参考目录
 [1]《Linux内核情景分析》[中]毛德操等 [著]
