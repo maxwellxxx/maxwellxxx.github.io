@@ -44,6 +44,8 @@ PCI设备各个区间不允许互相冲突，如果发生冲突，也要做出�
 
 结构中的start和end表示该区间的地址范围，flags表示区间的性质，比如是memory还是I/O地址。指针child，sibling和parent则用来维系可以上下两个方向攀援的树形结构。每个区间（的resource结构）都通过指针child只想其第一个子区间，而同区间的所有子区间都通过指针sibling形成一个单链接，并都通过指针parent指向其父区间。
 
+![resource](/images/resource.png) 
+
 我们在第四篇讲过，在创建主PCI总线时，在pci_bus结构中对resources链表添加了两个resource，分别是：
 
 	  //kernel/resource.c
@@ -114,7 +116,7 @@ PCI设备各个区间不允许互相冲突，如果发生冲突，也要做出�
 	240         pcibios_allocate_bus_resources(child);
 	241 } 
 
-我们在前几篇讲过扫描根总线的时是递归调用pci_scan_child_bus来扫描的，它是一个深度优先的算法，会扫描根总线上所有通过“PCI—PCI”桥连接的总线。当时我们也看到过总线与总线的关系通过队列children还有指针parent来描述。而队列头children维持了次层PCI总线的pci_bus结构队列，在完成PCI总线和设备的枚举后，这些数据结构就已经构建好了。那既然PCI总线的系统结构是递归的，对整个PCI结构的资源分配就应该也是递归的。所以看这里的line239，就是对次层的pci_bus结构队列递归调用了pcibios_allocate_bus_resources，做深度优先遍历。而对于总线本身，也就相当于连接总线的PCI桥（详情见pci_bus结构定义），则用pcibios_allocate_bridge_resources来分配资源。
+我们在前几篇讲过扫描根总线的时是递归调用pci_scan_child_bus来扫描的，它是一个深度优先的算法，会扫描根总线上所有通过“PCI—PCI”桥连接的总线。当时我们也看到过总线与总线的关系通过队列children还有指针parent来描述。而队列头children维持了次层PCI总线的pci_bus结构队列，在完成PCI总线和设备的枚举后，这些数据结构就已经构建好了。那既然PCI总线的系统结构是递归的，对整个PCI结构的资源分配就应该也是递归的。所以看这里的line239，就是对次层的pci_bus结构队列递归调用了pcibios_allocate_bus_resources，做深度优先遍历。而对于总线本身，也就相当于连接总线的PCI桥（详情见pci_bus结构定义），则用pcibios_allocate_bridge_resources来"分配"资源,实际上只是对其的4个地址（7~10）区间加以检验。
 
 	//arch/x86/pci/i386.c
 	208 static void pcibios_allocate_bridge_resources(struct pci_dev *dev) 
@@ -172,7 +174,149 @@ PCI设备各个区间不允许互相冲突，如果发生冲突，也要做出�
 
 对于普通设备，它的pci_dev结构中的resource[]数组开头六个（0~5）地址区间是设备上可能有的区间，第七区（6）是可能的扩充ROM区间。如果设备是PCI桥，则后面还有4个区间，pci_bus结构中的4个resource指针就分别指向这4个区间（见第6篇）而pci桥设备中的resource也是通过pci_read_bases（）总配置寄存器中读到的。我们在第5篇已经说过，PCI桥本身并不“使用”这些区间中的地址，而是用这些区间作为地址过滤的窗口。其中第一个是I/O地址，第二个用于存储器地址，第三个为“可预取”存储器地址区间，另外还有一个用于扩充ROM区间窗口。次层总线上所有设备（包括PCI桥）所使用的地址都必须在这些窗口中，换言之，这些设备所需要的地址都要从这些区间中分配。所以，每个PCI桥或者说每条PCI总线，都需要从其上层“批发”下一些地址，然后“零售”分配给连接在这条总线上的所有设备。包括把其中的一部分比发给次层总线。就这样，每条PCI总线上的设备都向其所在的总线批发地址资源，而总线则向其上层总线批发。那么，顶层的PCI总线又向谁批发呢？那就是ioport_resource和iomem_resource,这是两种地址资源的终极来源。
 
+如果PCI桥的某个区间已经有了对资源的需求，就要先通过pci_claim_bridge_resource来分配资源。
 
+	 // drivers/pci/setup-bus.c 
+	 650 int pci_claim_bridge_resource(struct pci_dev *bridge, int i)
+	 651 {                     
+	 652     if (i < PCI_BRIDGE_RESOURCES || i > PCI_BRIDGE_RESOURCE_END)
+	 653         return 0;     
+	 654                       
+	 655     if (pci_claim_resource(bridge, i) == 0)
+	 656         return 0;   /* claimed the window */
+	 ..........................
+	 682 } 
+
+	 //drivers/pci/setup-res.c
+	 108 int pci_claim_resource(struct pci_dev *dev, int resource)
+	 109 {   
+	 110     struct resource *res = &dev->resource[resource];
+  	 111     struct resource *root, *conflict;
+ 	 112     
+ 	 113     if (res->flags & IORESOURCE_UNSET) {
+ 	 114         dev_info(&dev->dev, "can't claim BAR %d %pR: no address assigned\n",
+ 	 115              resource, res);
+	 116         return -EINVAL;
+	 117     }
+	 118     
+	 119     root = pci_find_parent_resource(dev, res);
+	 120     if (!root) {
+	 121         dev_info(&dev->dev, "can't claim BAR %d %pR: no compatible bridge window\n",
+	 122              resource, res);
+	 123         return -EINVAL;
+	 124     }
+	 125     
+	 126     conflict = request_resource_conflict(root, res);
+	 127     if (conflict) {
+	 128         dev_info(&dev->dev, "can't claim BAR %d %pR: address conflict with %s %pR\n",
+	 129              resource, res, conflict->name, conflict);
+	 130         return -EBUSY;
+	 131     }
+	 132     
+	 133     return 0;
+	 134 } 
+
+	 drivers/pci/pci.c 
+	 408 struct resource *pci_find_parent_resource(const struct pci_dev *dev,
+	 409                       struct resource *res)
+	 410 {                          
+	 411     const struct pci_bus *bus = dev->bus;
+	 412     struct resource *r;    
+	 413     int i;                 
+	 414                            
+	 415     pci_bus_for_each_resource(bus, r, i) {
+	 416         if (!r)            
+	 417             continue;      
+	 418         if (res->start && resource_contains(r, res)) {
+	 419                            
+	 420             /*             
+	 421              * If the window is prefetchable but the BAR is
+	 422              * not, the allocator made a mistake.
+	 423              */            
+	 424             if (r->flags & IORESOURCE_PREFETCH &&
+	 425                 !(res->flags & IORESOURCE_PREFETCH))
+	 426                 return NULL; 
+	 427                            
+	 428             /*             
+	 429              * If we're below a transparent bridge, there may
+	 430              * be both a positively-decoded aperture and a
+	 431              * subtractively-decoded region that contain the BAR.
+	 432              * We want the positively-decoded one, so this depends
+	 433              * on pci_bus_for_each_resource() giving us those
+	 434              * first.      
+	 435              */            
+	 436             return r;      
+	 437         }                  
+	 438     }                      
+	 439     return NULL;           
+	 440 } 
+
+	 //include/linux/ioport.h
+	 172 /* True iff r1 completely contains r2 */
+	 173 static inline bool resource_contains(struct resource *r1, struct resource *r2) 
+	 174 {    
+	 175     if (resource_type(r1) != resource_type(r2))
+	 176         return false;
+	 177     if (r1->flags & IORESOURCE_UNSET || r2->flags & IORESOURCE_UNSET)
+	 178         return false;      
+	 179     return r1->start <= r2->start && r1->end >= r2->end;
+	 180 }  
+首先通过pci_find_parent_resource看看“父节点”是否拥有所需的地址资源，参数dev代表着次层总线PCI桥的pci_dev数据结构，res则代表所需要的resource结构。分配时则依次扫描PCI桥所在总线的4个地址区间。分配的大原则时范围必须相符，而且类型也必须相符（由函数resource_contains控制）。其次就是，是否为“可预取”最好也可以能一致，如果要求区间用于“可预取”的存储器，而总线上的区间时供不可预取的寄存器使用的，那么虽然勉强，但是可以接受，如果情况反过来，就不行了（具体看line424）。
+
+如果在父节点中找到了能够满足要求的区间，则函数返回该区间的指针（否则为0），说明所要求的区间时由保障的，所以就通过request_resource_conflict（）来进一步分配了。（以前版本的内核这个函数是request_resource，现在内核中request_resource本质也调用了request_resource_conflict）
+
+	 //kernel/resource.c
+	 284 /**           
+	 285  * request_resource_conflict - request and reserve an I/O or memory resource
+	 286  * @root: root resource descriptor
+	 287  * @new: resource descriptor desired by caller
+	 288  * 
+	 289  * Returns 0 for success, conflict resource on error.
+	 290  */           
+	 291 struct resource *request_resource_conflict(struct resource *root, struct resource *new) 
+	 292 {  
+	 293     struct resource *conflict;
+	 294    
+	 295     write_lock(&resource_lock);
+	 296     conflict = __request_resource(root, new);
+	 297     write_unlock(&resource_lock);
+	 298     return conflict;
+	 299 }  
+
+	 206 /* Return the conflict entry if you can't request it */
+	 207 static struct resource * __request_resource(struct resource *root, struct resource *new)
+	 208 {   
+	 209     resource_size_t start = new->start;
+	 210     resource_size_t end = new->end;
+	 211     struct resource *tmp, **p;
+	 212     
+	 213     if (end < start)
+	 214         return root;
+	 215     if (start < root->start)
+	 216         return root;
+	 217     if (end > root->end)
+	 218         return root;
+	 219     p = &root->child;
+	 220     for (;;) {
+	 221         tmp = *p;
+	 222         if (!tmp || tmp->start > end) {
+	 223             new->sibling = tmp;
+	 224             *p = new;
+	 225             new->parent = root;
+	 226             return NULL;
+	 227         }
+	 228         p = &tmp->sibling;
+	 229         if (tmp->end < start)
+	 230             continue;
+	 231         return tmp;
+	 232     }
+	 233 }  
+
+进行资源分配时涉及到了队列操作，不容许任何打扰，所以必须加锁。具体操作由__request_resource来完成，这里的参数root是指向总线的某个resource数据结构，而new则是指向PCI桥，即次层总线的resource数据结构。代码中通过一个for循环在root的子区间队列中为new找到一个适当的位置，然后将new插入到其中，如果发现了new区间与已有的子区间冲突，则操作失败返回与其冲突的指针。
+
+当完成了对pcibios_allocate_bus_resources()的递归调用后，所有的PCI总线所需要的地址资源已经分配好了。但是，其实可以看出来，这里除了冲突检测外，所谓的“分配”其实只是一种“事后追认”而已。这些区间的范围本来就是从PCI桥里面读出来的，现存也并没有加以改变。所做的只是为这些区间建立起resource结构，并插入到整个地址资源树的某个位置上，以供冲突检测。那么，这些PCI桥是怎么知道应该有什么样的窗口呢？这些都是由BIOS在开机自检时就设置好的，既然设置好了也就不要再推倒重来了。如果BIOS并没有设置，那也可以通过扫描已经建立器的pci_bus和pci_dev数据结构统计出来，或者再扫描、枚举的过程中计算出来。
+
+回到pcibios_resource_survey中，接下来就要为PCI设备分配地址资源了，这里的分配调用了两趟（这个两趟是不是很熟悉？？可以复习下第六篇）pcibios_allocate_resources，这里的“分配”同样也是“追认”。太长了，下篇见吧！
 ##参考目录
 [1]《Linux内核情景分析》[中]毛德操等 [著]
 
