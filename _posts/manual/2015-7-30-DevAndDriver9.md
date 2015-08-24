@@ -1,7 +1,7 @@
 ---
 layout: post
 title: Linux设备驱动模型及其他(9)
-description: 为PCI设备地址空间分配总线地址
+description: 为PCI设备地址空间分配总线地址（PCI总线）
 category: manual
 ---
 
@@ -67,6 +67,7 @@ PCI设备各个区间不允许互相冲突，如果发生冲突，也要做出�
 
 表示如果要使用I/O地址区间就从ioport_resource中分配，使用内存地址区间就从iomem_resource分配。不过系统在初始化阶段已经从这两个空间分配了许多资源，所以已经不再是像它们初值所表示的整个I/O地址空间或者整个内存地址空间了。
 
+##为PCI总线分配地址空间
 对总线地址的确认和分配是由pcibios_resource_survey()完成的，调用关系和代码如下：
 
 	pci_subsys_init（）（subsys_initcall）

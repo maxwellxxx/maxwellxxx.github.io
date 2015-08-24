@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <!--
+    * Author:         BeiYuu
+    -->
+    <meta charset="utf-8" />
+    <title>Linux设备驱动模型及其他(10) | maxwellxxx's Blog</title>
+    <meta name="author" content="MaxWellxxx" />
+    <meta name="renderer" content="webkit">
+    <meta name="description" content="MaxWellxxx's Blog" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0">
+    <link rel="stylesheet" href="/css/default.css" type="text/css" />
+    <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
+    <link rel="alternate" type="application/atom+xml" title="Recent Entries" href="/atom.xml" />
+    <script src="/js/jquery-1.7.1.min.js" type="text/javascript"></script>
+</head>
+<body>
+
+    <div class="home-menu">
+        <div class="home-icon-con">
+            <a class="home-menu-icon" href="/">MaxWellxxx</a>
+            <a class="home-follow" href="#" title="Contact Me">+</a>
+        </div>
+        <div class="home-contact">
+            <a href="http://weibo.com/u/1863312387" target="_blank" style="margin-left:-5px;"><img src="http://www.weibo.com/favicon.ico" alt="" width="25"/></a>
+        </div>
+    </div>
+
+    <link rel="stylesheet" href="/js/prettify/prettify.css" />
+<link href="/assets/themes/fancyBox/jquery.fancybox.css?v=2.1.5" rel="stylesheet" media="all" />
+<style type="text/css">
+    body { background:#e8e8e8; }
+    @media screen and (max-width: 1000px){
+        body { background:#fff; }
+    }
+    @media screen and (max-width: 1020px){
+        body { background:#fff; }
+    }
+</style>
+
+<div id="content">
+    <div class="entry">
+        <h1 class="entry-title"><a href="/DevAndDriver10" title="Linux设备驱动模型及其他(10)">Linux设备驱动模型及其他(10)</a></h1>
+        <p class="entry-date">2015-07-30</p>
+        <blockquote><p>上章讲到所有的PCI总线所需要的地址资源已经分配好了。</p></blockquote>
+
+<h2>为PCI设备分配地址空间</h2>
+
+<p>回到pcibios_resource_survey中，接下来就要为PCI设备分配地址资源了，这里的分配调用了两趟（这个两趟是不是很熟悉？？可以复习下第六篇）pcibios_allocate_resources，这里的“分配”同样也是“追认”。</p>
+
+<pre><code>//arch/x86/pci/i386.c 
+387 void __init pcibios_resource_survey(void)
+388 {
+389     struct pci_bus *bus;
+390    
+391     DBG("PCI: Allocating resources\n");
+392    
+393     list_for_each_entry(bus, &amp;pci_root_buses, node)
+394         pcibios_allocate_bus_resources(bus);
+395    
+396     list_for_each_entry(bus, &amp;pci_root_buses, node)
+397         pcibios_allocate_resources(bus, 0);
+398     list_for_each_entry(bus, &amp;pci_root_buses, node)
+399         pcibios_allocate_resources(bus, 1);
+400    
+401     e820_reserve_resources_late();
+.........................................
+408 }
+
+306 static void pcibios_allocate_resources(struct pci_bus *bus, int pass)
+307 { 
+308     struct pci_dev *dev;
+309     struct pci_bus *child;
+310 
+311     list_for_each_entry(dev, &amp;bus-&gt;devices, bus_list) {
+312         pcibios_allocate_dev_resources(dev, pass);
+313 
+314         child = dev-&gt;subordinate; 
+315         if (child)  
+316             pcibios_allocate_resources(child, pass);
+317     }   
+318 }
+</code></pre>
+
+<p>pcibios_allocate_resources为当前总线的每个设备分配地址空间，如果设备为桥设备，则递归调用pcibios_allocate_resources（）为次层总线上的设备分配地址空间，正真的工作由pcibios_allocate_dev_resources来进行：</p>
+
+<pre><code>//arch/x86/pci/i386.c 
+248 static void pcibios_allocate_dev_resources(struct pci_dev *dev, int pass) 
+249 {
+250     int idx, disabled, i;
+251     u16 command;
+252     struct resource *r;
+253    
+254     struct pci_check_idx_range idx_range[] = {
+255         { PCI_STD_RESOURCES, PCI_STD_RESOURCE_END },
+256 #ifdef CONFIG_PCI_IOV
+257         { PCI_IOV_RESOURCES, PCI_IOV_RESOURCE_END },
+258 #endif
+259     };
+260    
+261     pci_read_config_word(dev, PCI_COMMAND, &amp;command);
+262     for (i = 0; i &lt; ARRAY_SIZE(idx_range); i++)
+263         for (idx = idx_range[i].start; idx &lt;= idx_range[i].end; idx++) {
+264             r = &amp;dev-&gt;resource[idx];
+265             if (r-&gt;parent)  /* Already allocated */
+266                 continue;
+267             if (!r-&gt;start)  /* Address not assigned at all */
+268                 continue;
+269             if (r-&gt;flags &amp; IORESOURCE_IO)
+270                 disabled = !(command &amp; PCI_COMMAND_IO);
+271             else
+272                 disabled = !(command &amp; PCI_COMMAND_MEMORY);
+273             if (pass == disabled) {
+274                 dev_dbg(&amp;dev-&gt;dev,
+275                     "BAR %d: reserving %pr (d=%d, p=%d)\n",
+276                     idx, r, disabled, pass);
+277                 if (pci_claim_resource(dev, idx) &lt; 0) {
+278                     if (r-&gt;flags &amp; IORESOURCE_PCI_FIXED) {
+279                         dev_info(&amp;dev-&gt;dev, "BAR %d %pR is immovable\n",
+280                              idx, r);
+281                     } else {
+282                         /* We'll assign a new address later */
+283                         pcibios_save_fw_addr(dev,
+284                                 idx, r-&gt;start);
+285                         r-&gt;end -= r-&gt;start;
+286                         r-&gt;start = 0;
+287                     }
+288                 }
+289             }
+290         }
+291     if (!pass) {
+292         r = &amp;dev-&gt;resource[PCI_ROM_RESOURCE];
+293         if (r-&gt;flags &amp; IORESOURCE_ROM_ENABLE) {
+294             /* Turn the ROM off, leave the resource region,
+295              * but keep it unregistered. */
+296             u32 reg;
+297             dev_dbg(&amp;dev-&gt;dev, "disabling ROM %pR\n", r);
+298             r-&gt;flags &amp;= ~IORESOURCE_ROM_ENABLE;
+299             pci_read_config_dword(dev, dev-&gt;rom_base_reg, &amp;reg);
+300             pci_write_config_dword(dev, dev-&gt;rom_base_reg,
+301                         reg &amp; ~PCI_ROM_ADDRESS_ENABLE);
+302         }
+303     }
+304 } 
+</code></pre>
+
+<p>对于每一个PCI设备的6个常规的区间，如果这些区间已经生效（可以接受访问，line269～line272中得到的disabled为0）就在第一趟（pass=0）扫描时候进行分配地址资源，否则就在第二趟（pass=1）时分配。如果时扩充ROM区间（第七个区间）则要在第一趟（pass=0）时进行处理。</p>
+
+<p>这些设备区间存在几种可能。第一种时已经分配过资源的（parent指向父节点，line265），对于这种直接跳过；第二种是起始地址为0（line267），这种区间可能不需要分配资源，或者其父节点不能满足其要求，也跳过；第三种时要分配地址的区间了，在上一段条件的约束下，在pass0或者1时直接通过pci_claim_resource分配资源。这个函数在上篇已经讲过了。</p>
+
+<p>如果发现不能在当前的起始地址从父节点上分配所需的资源，即范围不符或者发生冲突，就先将该区间的平移到起始地址为0的地方（line281~line286）,这些区间的起始地址需要加以变更才行。这里需要说明，这些区间的地址资源之所以分配失败并不是由于父节点中的资源短缺，而是因为对起始地址的要求不能满足。BIOS在确定父节点窗口大小时是经过计算的，加上对窗口位置的对齐，父节点的窗口一般都要比实际需要的大。所以，只要允许将区间适当的平移，就一定能分配到所需要的地址资源。</p>
+
+<p>对于ROM区间，则在第一次扫描时进行关闭（pass=0）。ROM区间一般只是在初始化时由BIOS或者具体的设备驱动程序使用，所以现在可以关闭了。如果需要时还可以在设备驱动程序中打开。但是它的地址空间其实还没有分配，对ROM的地址空间分配是和上面没有分配成功的0~6个地址区间一起进行的。</p>
+
+<p>pcibios_resource_survey的工作到这里就完全结束了（这里忽略了e820，和APCI的处理），也意味着pci_subsys_init()的工作也大致结束了。对于不能在原有起始地址上分配所需地址资源的区间，即起始地址已经变成0的区间，已经ROM区间的地址空间要通过后续的工作来分配。但是具体这个工作在哪里执行呢？以前版本内核确实是在pcibios_resource_survey里面直接调用的，新的内核好像改了，也有交给initcall了，具体如下：</p>
+
+<pre><code>//arch/x86/pci/i386.c
+354 static int __init pcibios_assign_resources(void)
+355 {
+356     struct pci_bus *bus;
+357  
+358     if (!(pci_probe &amp; PCI_ASSIGN_ROMS))
+359         list_for_each_entry(bus, &amp;pci_root_buses, node)
+360             pcibios_allocate_rom_resources(bus);
+361  
+362     pci_assign_unassigned_resources();
+363     pcibios_fw_addr_list_del();
+364  
+365     return 0;
+366 }
+367  
+368 /**
+369  * called in fs_initcall (one below subsys_initcall),
+370  * give a chance for motherboard reserve resources
+371  */  
+372 fs_initcall(pcibios_assign_resources);
+</code></pre>
+
+<p>看注释的话已经很明了了，对于pcibios_allocate_rom_resources（）就是进行ROM区间的地址分配，大致工作和分配0~6区间的流程差不多，这里就不分析了。重要的时这里的pci_assign_unassigned_resources()，如果说前面所谓的“分配”时一种追认，这里这个才是真正的分配！</p>
+
+<h2>参考目录</h2>
+
+<p>[1]《Linux内核情景分析》[中]毛德操等 [著]</p>
+
+<p>[2]《深入Linux内核架构》[德]Wolfgang Mauerer 著 [中]郭旭 译</p>
+
+<!-- 多说评论框 start -->
+	<div class="ds-thread" data-thread-key="Linux设备驱动模型及其他(10)" data-title="Linux设备驱动模型及其他(10)" data-url="/DevAndDriver10"></div>
+<!-- 多说评论框 end -->
+<!-- 多说公共JS代码 start (一个网页只需插入一次) -->
+<script type="text/javascript">
+var duoshuoQuery = {short_name:"maxwellxxx"};
+	(function() {
+		var ds = document.createElement('script');
+		ds.type = 'text/javascript';ds.async = true;
+		ds.src = (document.location.protocol == 'https:' ? 'https:' : 'http:') + '//static.duoshuo.com/embed.js';
+		ds.charset = 'UTF-8';
+		(document.getElementsByTagName('head')[0] 
+		 || document.getElementsByTagName('body')[0]).appendChild(ds);
+	})();
+	</script>
+<!-- 多说公共JS代码 end -->
+    </div>
+
+    <div class="sidenav">
+        <iframe width="100%" height="75" class="share_self"  frameborder="0" scrolling="no" src="http://widget.weibo.com/weiboshow/index.php?language=&width=0&height=75&fansRow=2&ptype=1&speed=0&skin=5&isTitle=0&noborder=0&isWeibo=0&isFans=0&uid=1863312387&verifier=996dff3a&dpc=1"></iframe>
+    </div>
+
+    <div class="sidenav">
+        <h2>Blog</h2>
+        <ul class="artical-list">
+        
+            <li><a href="/buildcm">编译完整CM至HTC ONE（m7 gsm）</a></li>
+        
+            <li><a href="/AOSP">2015年第一发，不FQ下AOSP(为了百度TAG:Android源代码国内镜像)</a></li>
+        
+            <li><a href="/pinglun">这下大家满足了吧</a></li>
+        
+            <li><a href="/yougan">我是喷子</a></li>
+        
+            <li><a href="/newstory">新的故事</a></li>
+        
+        </ul>
+
+        <h2>My Manual</h2>
+        <ul class="artical-list">
+        
+            <li><a href="/DevAndDriver9">Linux设备驱动模型及其他(9)</a></li>
+        
+            <li><a href="/DevAndDriver8">Linux设备驱动模型及其他(8)</a></li>
+        
+            <li><a href="/DevAndDriver7">Linux设备驱动模型及其他(7)</a></li>
+        
+            <li><a href="/DevAndDriver6">Linux设备驱动模型及其他(6)</a></li>
+        
+            <li><a href="/DevAndDriver5">Linux设备驱动模型及其他(5)</a></li>
+        
+            <li><a href="/DevAndDriver4">Linux设备驱动模型及其他(4)</a></li>
+        
+            <li><a href="/DevAndDriver10">Linux设备驱动模型及其他(10)</a></li>
+        
+            <li><a href="/DevAndDriver3">Linux设备驱动模型及其他(3)</a></li>
+        
+            <li><a href="/DevAndDriver2">Linux设备驱动模型及其他(2)</a></li>
+        
+            <li><a href="/DevAndDriver1">Linux设备驱动模型及其他(1)</a></li>
+        
+            <li><a href="/linuxmemblock">Linux内核初期内存管理---memblock</a></li>
+        
+            <li><a href="/linuxearlymemory">Linux内核初始化阶段内存管理的几种阶段(1)</a></li>
+        
+            <li><a href="/linuxmemory">Linux高端内存映射等等</a></li>
+        
+            <li><a href="/linuxmemmanage">Linux初始化阶段内存管理框架初始化</a></li>
+        
+            <li><a href="/Linux-File">Linux文件I/O、系统基础编程总结</a></li>
+        
+            <li><a href="/Linux-Unix">Linux/Unix系统编程</a></li>
+        
+        </ul>
+
+        <h2>Project</h2>
+        <ul class="artical-list">
+        
+            <li><a href="/linux-swap">扩展Ubuntu Swap分区</a></li>
+        
+            <li><a href="/tinyos-ana">Tinyos概要分析</a></li>
+        
+            <li><a href="/tinyos">Ubuntu 下Tinyos开发环境的搭建</a></li>
+        
+            <li><a href="/github-pages">使用Github Pages建独立博客</a></li>
+        
+        </ul>
+    </div>
+</div>
+  
+<script src="/js/post.js" type="text/javascript"></script>
+<script type="text/javascript" src="/assets/themes/fancyBox/jquery.fancybox.pack.js?v=2.1.5"></script>
+<script>
+// 给图片添加链接
+$(document).ready(function() {
+  $("p img").each(function() {
+    var strA = "<a id='yourid' href='" + this.src + "'></a>";
+    $(this).wrapAll(strA);
+  });
+});
+
+// fancybox
+$("#yourid").fancybox({
+  openEffect    : 'elastic',
+  closeEffect   : 'elastic',
+});
+</script>
+
+
+
+    <script type="text/javascript">
+        $(function(){
+            $('.home-follow').click(function(e){
+                e.preventDefault();
+
+                if($('.home-contact').is(':visible')){
+                    $('.home-contact').slideUp(100);
+                }else{
+                    $('.home-contact').slideDown(100);
+                }
+            });
+        })
+    </script>
+</body>
+</html>
