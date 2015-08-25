@@ -113,7 +113,7 @@ pcibios_allocate_resources为当前总线的每个设备分配地址空间，如
 
 对于ROM区间，则在第一次扫描时进行关闭（pass=0）。ROM区间一般只是在初始化时由BIOS或者具体的设备驱动程序使用，所以现在可以关闭了。如果需要时还可以在设备驱动程序中打开。但是它的地址空间其实还没有分配，对ROM的地址空间分配是和上面没有分配成功的0~6个地址区间一起进行的。
 
-pcibios_resource_survey的工作到这里就完全结束了（这里忽略了e820，和APCI的处理），也意味着pci_subsys_init()的工作也大致结束了。对于不能在原有起始地址上分配所需地址资源的区间，即起始地址已经变成0的区间，已经ROM区间的地址空间要通过后续的工作来分配。但是具体这个工作在哪里执行呢？以前版本内核确实是在pcibios_resource_survey里面直接调用的，新的内核好像改了，也有交给initcall了，具体如下：
+pcibios_resource_survey的工作到这里就完全结束了（这里忽略了e820，和APCI的处理），也意味着pci_subsys_init()的工作也大致结束了。对于不能在原有起始地址上分配所需地址资源的区间，即起始地址已经变成0的区间，以及ROM区间的地址空间要通过后续的工作来分配，注意，资源没有分配成功的总线也是在后面一起处理的。但是具体这个工作在哪里执行呢？以前版本内核确实是在pcibios_resource_survey里面直接调用的，新的内核好像改了，也有交给initcall了，具体如下：
 
 	//arch/x86/pci/i386.c
 	354 static int __init pcibios_assign_resources(void)
@@ -137,6 +137,7 @@ pcibios_resource_survey的工作到这里就完全结束了（这里忽略了e82
 	372 fs_initcall(pcibios_assign_resources);
 
 看注释的话已经很明了了，对于pcibios_allocate_rom_resources（）就是进行ROM区间的地址分配，大致工作和分配0~6区间的流程差不多，这里就不分析了。重要的时这里的pci_assign_unassigned_resources()，如果说前面所谓的“分配”时一种追认，这里这个才是真正的分配！
+
 ##参考目录
 [1]《Linux内核情景分析》[中]毛德操等 [著]
 

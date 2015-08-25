@@ -1,28 +1,38 @@
 ---
 layout: post
-title: Linux设备驱动模型及其他（待合并)
-description: 为PCI设备地址空间分配总线地址
+title: Linux设备驱动模型及其他（11)
+description: 在PCI设备地址空间分配总线资源和设备资源（真正分配）
 category: manual
 ---
 
-首先看下
+>前两篇讲到已经对系统上的PCI总线和设备完成了资源的验证，对于验证成功资源，会设置其resource结构，试图建立起一棵资源树。对于没有验证验证成功的总线资源，将其flags，start，end设为0，对于没有验证成功的设备资源平移资源区间到0开始，以已经后续处理。
 
-	//arch/x86/pci/i386.c 
+##真正分配资源
+
+上篇看到这个函数：
+
+	//arch/x86/pci/i386.c
 	354 static int __init pcibios_assign_resources(void)
-	355 {    
+	355 {
 	356     struct pci_bus *bus;
-	357     
-	358     if (!(pci_probe & PCI_ASSIGN_ROMS))
-	359         list_for_each_entry(bus, &pci_root_buses, node)
+	357  
+	358     if (!(pci_probe &amp; PCI_ASSIGN_ROMS))
+	359         list_for_each_entry(bus, &amp;pci_root_buses, node)
 	360             pcibios_allocate_rom_resources(bus);
 	361  
 	362     pci_assign_unassigned_resources();
 	363     pcibios_fw_addr_list_del();
-	364     
+	364  
 	365     return 0;
-	366 }  
+	366 }
+	367  
+	368 /**
+	369  * called in fs_initcall (one below subsys_initcall),
+	370  * give a chance for motherboard reserve resources
+	371  */  
+	372 fs_initcall(pcibios_assign_resources);
 
-pci_assign_unassigned_resources()就是对未分配（“验证”）成功的PCI总线资源，PCI设备（包括ROM）资源进行分配，现在这个函数可不像从前那么质朴了，以前的实现可以说简单明了，我们来看看它现在的样子：
+已经讲过pcibios_allocate_rom_resources是对ROM资源进行验证，而pci_assign_unassigned_resources()就是对未分配（“验证”）成功的PCI总线资源，PCI设备（包括ROM）资源进行分配，现在这个函数可不像从前那么质朴了，以前的实现可以说简单明了。我们来pci_assign_unassigned_resources()样子：
 
 	//drivers/pci/setup-bus.c
 	1669 void __init pci_assign_unassigned_resources(void)
@@ -405,6 +415,358 @@ pci_assign_unassigned_resources()就是对未分配（“验证”）成功的PC
 	 907                (unsigned long long)size1-size0);
 	 908     }
 	 909 }
+
+首先是通过find_free_bus_resource验证下总想的I/O地址是不是真的没有分配成功（仅判断resource->parent是否有值），如果I/O资源分配成功了，就没什么好修正的了，直接退出函数。如果没有分配成功就说明是有冲突的，就需要重新计算区间大小，区间大小就是总线上以及下层设备需要的区间大小总和。这里需要注意__pci_bus_size_bridges是深度优先的，所以这里的计算都是从最下层的总线开始逐层计算到上层的，只有这样才能正确修正每一层的区间大小。计算过程中还有一个就是区间对齐的问题，对于总线的I/O资源是要求4K对齐的，所以长度也是4K对齐。重新计算后得到的大小就重新赋给总线的resource。
+
+修正完I/O的区间大小，就还要修正MEM的区间，工作有pbus_size_mem来完成，大致处理和I/O修正相同，只不过pbus_size_mem会被调用两次，分配用于查找可预期的存储空间和普通的存储空间。
+
+解决完总线资源冲突，就可以来为没有分配成功的总线和设备资源进行分配了，如果分配成功的话还需要将resource更新到PCI设备的配置空间寄存器中。回到pci_assign_unassigned_root_bus_resources中，调用__pci_bus_assign_resources来分配资源：
+
+	//drivers/pci/setup-bus.c
+	1277 void __pci_bus_assign_resources(const struct pci_bus *bus,
+	1278                 struct list_head *realloc_head,
+	1279                 struct list_head *fail_head)
+	1280 {  
+	1281     struct pci_bus *b;
+	1282     struct pci_dev *dev;
+	1283    
+	1284     pbus_assign_resources_sorted(bus, realloc_head, fail_head);
+	1285    
+	1286     list_for_each_entry(dev, &bus->devices, bus_list) {
+	1287         b = dev->subordinate;
+	1288         if (!b)
+	1289             continue;
+	1290    
+	1291         __pci_bus_assign_resources(b, realloc_head, fail_head);
+	1292    
+	1293         switch (dev->class >> 8) {
+	1294         case PCI_CLASS_BRIDGE_PCI:
+	1295             if (!pci_is_enabled(dev))
+	1296                 pci_setup_bridge(b);
+	1297             break;
+	1298    
+	1299         case PCI_CLASS_BRIDGE_CARDBUS:
+	1300             pci_setup_cardbus(b);
+	1301             break;
+	1302    
+	1303         default:
+	1304             dev_info(&dev->dev, "not setting up bridge for bus %04x:%02x\n",
+	1305                  pci_domain_nr(b), b->number);
+	1306             break;
+	1307         }
+	1308     }
+	1309 } 
+
+看pci_assign_unassigned_root_bus_resources的注释可以看到，这个函数一反常态并不是深度由先的。它首先为上层总线调用pbus_assign_resources_sorted，来分配总线上各个设备资源，接着如果设备上存在PCI桥再递归调用__pci_bus_assign_resources，但也是先分配自身设备的资源，这样从上层到下层逐层分配。最后为每个PCI桥调用pci_setup_bridge更新PCI桥设备配置寄存器。我们一步步来看下，首先是pbus_assign_resources_sorted：
+
+	 //drivers/pci/setup-bus.c 
+	 454 static void pbus_assign_resources_sorted(const struct pci_bus *bus
+	 455                      struct list_head *realloc_head,
+	 456                      struct list_head *fail_head)
+	 457 {   
+	 458     struct pci_dev *dev;  
+	 459     LIST_HEAD(head);
+	 460     
+	 461     list_for_each_entry(dev, &bus->devices, bus_list)
+	 462         __dev_sort_resources(dev, &head);
+	 463     
+	 464     __assign_resources_sorted(&head, realloc_head, fail_head);
+	 465 } 
+
+__dev_sort_resources将总线上所有没有分配成功的设备添加到head链表中，添加时首先计算设备资源的对齐因子，然后按照对齐因子由大到小插入到链表中。__assign_resources_sorted则统一对head链表中的资源进行分配：
+
+	 //drivers/pci/setup-bus.c  
+	 343 static void __assign_resources_sorted(struct list_head *head,
+	 344                  struct list_head *realloc_head,
+	 345                  struct list_head *fail_head)
+	 346 {   
+	 368     LIST_HEAD(save_head);
+	 369     LIST_HEAD(local_fail_head);
+	 370     struct pci_dev_resource *save_res;
+	 371     struct pci_dev_resource *dev_res, *tmp_res;
+	 372     unsigned long fail_type;
+	 373     
+	 374     /* Check if optional add_size is there */
+	 375     if (!realloc_head || list_empty(realloc_head))
+	 376         goto requested_and_reassign;
+	 ..................................
+	 ..................................
+	 432 requested_and_reassign:
+	 433     /* Satisfy the must-have resource requests */
+	 434     assign_requested_resources_sorted(head, fail_head);
+	 435    
+	 436     /* Try to satisfy any additional optional resource
+	 437         requests */
+	 438     if (realloc_head)
+	 439         reassign_resources_sorted(realloc_head, head);
+	 440     free_list(head);
+	 441 } 
+
+	 263 /**          
+	 264  * assign_requested_resources_sorted() - satisfy resource requests
+	 265  *           
+	 266  * @head : head of the list tracking requests for resources
+	 267  * @fail_head : head of the list tracking requests that could
+	 268  *      not be allocated
+	 269  *           
+	 270  * Satisfy resource requests of each element in the list. Add
+	 271  * requests that could not satisfied to the failed_list.
+	 272  */          
+	 273 static void assign_requested_resources_sorted(struct list_head *head,
+	 274                  struct list_head *fail_head)
+	 275 {            
+	 276     struct resource *res;
+	 277     struct pci_dev_resource *dev_res;
+	 278     int idx;  
+	 279              
+	 280     list_for_each_entry(dev_res, head, list) {
+	 281         res = dev_res->res;
+	 282         idx = res - &dev_res->dev->resource[0]; 
+	 283         if (resource_size(res) &&
+	 284             pci_assign_resource(dev_res->dev, idx)) { 
+	 285             if (fail_head) {
+	 286                 /*
+	 287                  * if the failed res is for ROM BAR, and it will
+	 288                  * be enabled later, don't add it to the list
+	 289                  */
+	 290                 if (!((idx == PCI_ROM_RESOURCE) &&
+	 291                       (!(res->flags & IORESOURCE_ROM_ENABLE))))
+	 292                     add_to_list(fail_head,
+	 293                             dev_res->dev, res,
+	 294                             0 /* don't care */,
+	 295                             0 /* don't care */);
+	 296             }
+	 297             reset_resource(res);
+	 298         }    
+	 299     }        
+	 300 } 
+这个函数涉及到很多复杂的操作，以后再进行分析，我们直接看最后的assign_requested_resources_sorted，这个函数就是对为分配列表进行处理。
+
+函数首先通过链表中pci_dev_resource的信息获得resource结构和该资源的索引值（line281～line282），然后通过pci_assign_resource来进行分配资源，如果不成功就加入到fail链表，并将resource的start，end，flags置0（line285~297）.
+
+	//drivers/pci/setup-res.c
+	264 int pci_assign_resource(struct pci_dev *dev, int resno)
+	265 {   
+	266     struct resource *res = dev->resource + resno;
+	267     resource_size_t align, size;
+	268     int ret;
+	269     
+	270     res->flags |= IORESOURCE_UNSET;
+	271     align = pci_resource_alignment(dev, res);
+	272     if (!align) {
+	273         dev_info(&dev->dev, "BAR %d: can't assign %pR (bogus alignment)\n",
+	274              resno, res);
+	275         return -EINVAL;
+	276     }
+	277     
+	278     size = resource_size(res);
+	279     ret = _pci_assign_resource(dev, resno, size, align);
+	280     
+	281     /*
+	282      * If we failed to assign anything, let's try the address
+	283      * where firmware left it.  That at least has a chance of
+	284      * working, which is better than just leaving it disabled.
+	285      */
+	286     if (ret < 0) {
+	287         dev_info(&dev->dev, "BAR %d: no space for %pR\n", resno, res);
+	288         ret = pci_revert_fw_address(res, dev, resno, size);
+	289     }
+	290     
+	291     if (ret < 0) {
+	292         dev_info(&dev->dev, "BAR %d: failed to assign %pR\n", resno,
+	293              res);
+	294         return ret;
+	295     }
+	296     
+	297     res->flags &= ~IORESOURCE_UNSET;
+	298     res->flags &= ~IORESOURCE_STARTALIGN;
+	299     dev_info(&dev->dev, "BAR %d: assigned %pR\n", resno, res);
+	300     if (resno < PCI_BRIDGE_RESOURCES)
+	301         pci_update_resource(dev, resno);
+	302     
+	303     return 0;
+	304 }   
+	305 EXPORT_SYMBOL(pci_assign_resource);
+
+看line279调用_pci_assign_resource来进行分配工作，如果分配成功那么就需要将resource更新到PCI配置寄存器，但PCI桥设备是例外，这个工作由pci_setup_bridge负责。（line301）
+
+	_pci_assign_resource
+	   |
+	   |
+	   __pci_assign_resource	
+
+	//drivers/pci/setup-res.c
+	200 static int __pci_assign_resource(struct pci_bus *bus, struct pci_dev *dev,
+	201         int resno, resource_size_t size, resource_size_t align)
+	202 {   
+	203     struct resource *res = dev->resource + resno;
+	204     resource_size_t min;
+	205     int ret;
+	206     
+	207     min = (res->flags & IORESOURCE_IO) ? PCIBIOS_MIN_IO : PCIBIOS_MIN_MEM;
+	208     
+	209     /*
+	210      * First, try exact prefetching match.  Even if a 64-bit
+	211      * prefetchable bridge window is below 4GB, we can't put a 32-bit
+	212      * prefetchable resource in it because pbus_size_mem() assumes a
+	213      * 64-bit window will contain no 32-bit resources.  If we assign
+	214      * things differently than they were sized, not everything will fit.
+	215      */
+	216     ret = pci_bus_alloc_resource(bus, res, size, align, min,
+	217                      IORESOURCE_PREFETCH | IORESOURCE_MEM_64,
+	218                      pcibios_align_resource, dev);
+	219     if (ret == 0)
+	220         return 0;
+	221     
+	222     /*
+	223      * If the prefetchable window is only 32 bits wide, we can put
+	224      * 64-bit prefetchable resources in it.
+	225      */
+	226     if ((res->flags & (IORESOURCE_PREFETCH | IORESOURCE_MEM_64)) ==
+	227          (IORESOURCE_PREFETCH | IORESOURCE_MEM_64)) {
+	228         ret = pci_bus_alloc_resource(bus, res, size, align, min,
+	229                          IORESOURCE_PREFETCH,
+	230                          pcibios_align_resource, dev);
+	231         if (ret == 0)
+	232             return 0;
+	233     }
+	234     
+	235     /*
+	236      * If we didn't find a better match, we can put any memory resource
+	237      * in a non-prefetchable window.  If this resource is 32 bits and
+	238      * non-prefetchable, the first call already tried the only possibility
+	239      * so we don't need to try again.
+	240      */
+	241     if (res->flags & (IORESOURCE_PREFETCH | IORESOURCE_MEM_64))
+	242         ret = pci_bus_alloc_resource(bus, res, size, align, min, 0,
+	243                          pcibios_align_resource, dev);
+	244     
+	245     return ret;
+	246 } 
+
+	 // arch/x86/include/asm/pci.h   
+	 60 extern unsigned long pci_mem_start;           
+	 61 #define PCIBIOS_MIN_IO      0x1000            
+	 62 #define PCIBIOS_MIN_MEM     (pci_mem_start) 
+
+__pci_assign_resource调用pci_bus_alloc_resource（）来为给定的设备从其所在的总线分配资源。line207，在分配时，还有个问题就是按照要求I/O区间的地址不能低于4K，MEM的地址也不能低于某个值（以前是256M）。还有就是，对于地址区间还有个是否必须满足“可预取”的问题，所以line216，line226先以IORESOURCE_PREFETCH为参调用一次pci_bus_alloc_resource（）如果失败在到line241放宽条件。看pci_bus_alloc_resource具体做了什么：
+
+	pci_bus_alloc_resource
+	  |
+	  |
+	  pci_bus_alloc_from_region
+
+	// drivers/pci/bus.c
+	132 static int pci_bus_alloc_from_region(struct pci_bus *bus, struct resource *res,   
+	133         resource_size_t size, resource_size_t align,
+	134         resource_size_t min, unsigned long type_mask,
+	135         resource_size_t (*alignf)(void *,
+	136                       const struct resource *,
+	137                       resource_size_t,
+	138                       resource_size_t),
+	139         void *alignf_data,
+	140         struct pci_bus_region *region)
+	141 {  
+	142     int i, ret;
+	143     struct resource *r, avail;
+	144     resource_size_t max;
+	145    
+	146     type_mask |= IORESOURCE_TYPE_BITS;
+	147    
+	148     pci_bus_for_each_resource(bus, r, i) {
+	149         if (!r)
+	150             continue;
+	151    
+	152         /* type_mask must match */
+	153         if ((res->flags ^ r->flags) & type_mask)
+	154             continue;
+	155    
+	156         /* We cannot allocate a non-prefetching resource
+	157            from a pre-fetching area */
+	158         if ((r->flags & IORESOURCE_PREFETCH) &&
+	159             !(res->flags & IORESOURCE_PREFETCH))
+	160             continue;
+	161    
+	162         avail = *r;
+	163         pci_clip_resource_to_region(bus, &avail, region);
+	164    
+	165         /*
+	166          * "min" is typically PCIBIOS_MIN_IO or PCIBIOS_MIN_MEM to
+	167          * protect badly documented motherboard resources, but if
+	168          * this is an already-configured bridge window, its start
+	169          * overrides "min".
+	170          */
+	171         if (avail.start)
+	172             min = avail.start;
+	173    
+	174         max = avail.end;
+	175    
+	176         /* Ok, try it out.. */
+	177         ret = allocate_resource(r, res, size, min, max,
+	178                     align, alignf, alignf_data);
+	179         if (ret == 0)
+	180             return 0;
+	181     }
+
+ 	669 /**
+ 	670  * allocate_resource - allocate empty slot in the resource tree given range & alignment.
+ 	671  *  The resource will be reallocated with a new size if it was already allocated
+ 	672  * @root: root resource descriptor
+ 	673  * @new: resource descriptor desired by caller
+ 	674  * @size: requested resource region size
+ 	675  * @min: minimum boundary to allocate
+	676  * @max: maximum boundary to allocate
+ 	677  * @align: alignment requested, in bytes
+ 	678  * @alignf: alignment function, optional, called if not NULL
+ 	679  * @alignf_data: arbitrary data to pass to the @alignf function
+ 	680  */
+ 	681 int allocate_resource(struct resource *root, struct resource *new,
+ 	682               resource_size_t size, resource_size_t min,
+ 	683               resource_size_t max, resource_size_t align,
+ 	684               resource_size_t (*alignf)(void *,
+ 	685                         const struct resource *,
+ 	686                         resource_size_t,
+ 	687                         resource_size_t),
+ 	688               void *alignf_data)
+ 	689 {  
+ 	690     int err;
+ 	691     struct resource_constraint constraint;
+ 	692    
+ 	693     if (!alignf)
+ 	694         alignf = simple_align_resource;
+ 	695    
+ 	696     constraint.min = min;
+ 	697     constraint.max = max;
+ 	698     constraint.align = align;
+ 	699     constraint.alignf = alignf;
+ 	700     constraint.alignf_data = alignf_data;
+ 	701    
+ 	702     if ( new->parent ) {
+ 	703         /* resource is already allocated, try reallocating with
+ 	704            the new constraints */
+ 	705         return reallocate_resource(root, new, size, &constraint);
+ 	706     }
+ 	707    
+ 	708     write_lock(&resource_lock);
+ 	709     err = find_resource(root, new, size, &constraint);
+ 	710     if (err >= 0 && __request_resource(root, new))
+ 	711         err = -EBUSY;
+ 	712     write_unlock(&resource_lock);
+ 	713     return err;
+ 	714 }
+
+遍历总线上类型相同的资源区，如果符合条件就由allocate_resource来执行分配，比较简单，可以看到是直接用__request_resource来进行分配的（忽略重新分配的情况reallocate_resource），这个函数我们已经介绍过了。
+
+分配成功的话就返回到pci_assign_resource中，到line297～line301，设置资源区标志位，如果对非PCI桥设备，调用pci_update_resource（）将新的resource信息写入到设备配置寄存器，主要就是组合寄存器的信息，然后用大家熟悉的pci_wriite_config_dword等操作设备配置寄存器。
+
+至此，就已经为总线上的设备分配好资源了，回到__pci_bus_assign_resources中，如果大家还记得的话，PCI桥设备的resource虽然已经分配了，但还没有将信息写入到配置寄存器，这部分工作就由pci_setup_bridge负责，它主要的工作是：
+<ul>
+<li>启用PCI桥中I/O和MEM访问。</li>
+<li>设置PCI桥对总线的控制能力。</li>
+</ul>
+注意这里仅仅是开启了PCI桥的相关设备，虽然前面已经将资源信息写入到PCI设备，但是对与普通PCI设备，并不意味这可以这些资源可以被访问了。配置寄存器中还有两个控制位，即PCI_COMMAND_IO和PCI_COMMAND_MEMORY，控制着设备所有的I/O和存储的地址空间。最终要将这两位置为1才能使这些区间真正的连接到PCI总线上。但是这里内核并没有做这一步，实际上是留给了具体的设备驱动程序。
+
+到此对PCI总线的初始化就全部完成了。内存中已经建立了多棵数记录这PCI总线和PCI设备的关系（一般只有一大棵，因为一般只有一条跟总线），而每个设备的每个地址区间已经有了总线地址，而且也有了资源树。
 
 
 ##参考目录
