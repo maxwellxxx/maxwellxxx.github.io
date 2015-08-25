@@ -1,6 +1,6 @@
 ---
 layout: post
-title: Linux设备驱动模型及其他（11)
+title: Linux设备驱动模型及其他(11)
 description: 在PCI设备地址空间分配总线资源和设备资源（真正分配）
 category: manual
 ---
