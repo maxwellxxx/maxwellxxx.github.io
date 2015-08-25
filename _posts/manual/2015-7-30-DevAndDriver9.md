@@ -1,7 +1,7 @@
 ---
 layout: post
 title: Linux设备驱动模型及其他(9)
-description: 为PCI设备地址空间分配总线地址
+description: 在PCI设备地址空间分配总线资源验证)
 category: manual
 ---
 
