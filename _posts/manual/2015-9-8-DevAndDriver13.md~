@@ -1,6 +1,6 @@
 ---
 layout: post
-title: Linux设备驱动模型及其他(12)
+title: Linux设备驱动模型及其他(13)
 description: 设备驱动模型初探1
 category: manual
 ---
@@ -55,7 +55,40 @@ linux设备驱动模型为内核建立一个统一的设备模型，从而有一
 
 PCI总线扫描结束后,只扫描到PCI设备层次,一些控制器(SATA,NVME控制器)连接的设备还没有被发现,需要加载控制器驱动后才能发现设备,比如扫描到的硬盘会为之调用add_disk().
 
-调用device_create和直接调用device_add的区别，就只是在参数devt上，如果devt为0（即直接调用device_add），那么devtmpfs就不会创建节点udev也同理，如果uevent中没有devt，那么udev也不会创建这个节点
+"调用device_create和直接调用device_add的区别，就只是在参数devt上，如果devt为0（即直接调用device_add），那么devtmpfs就不会创建节点udev也同理，如果uevent中没有devt，那么udev也不会创建这个节点
+
+
+	device_create
+	    |
+	   + -- kzalloc struct device
+	    |
+	   +---device_register
+		        |
+		       +-----device_initialize
+		        |
+		       +-----device_add
+
+device_create比device_add多做的事情非常清楚了呀。多一：
+1. 新建struct device， device_add是不会新建的，只会加。
+2. 进行了初始化， 如果不调device_register， 就得自己去调用device_initiali初始化。
+
+
+关于第二点，device_register的函数说明说得很清楚：
+/**
+*        device_register - register a device with the system.
+*        @dev:        pointer to the device structure
+*
+*        This happens in two clean steps - initialize the device
+*        and add it to the system. The two steps can be called
+*        separately, but this is the easiest and most common.
+*        I.e. you should only call the two helpers separately if
+*        have a clearly defined need to use and refcount the device
+*        before it is added to the hierarchy.
+*/
+
+关于正真设备文件的创建（不是指sys下的文件）， 最终是由device_add函数里头的kobject_uevent(&dev->kobj, KOBJ_ADD)完成的对hotplug_helper的调用的。"----"保留"书签中的内容
+
+
 ##我们有什么
 
 我们首先来看看到现在为止,我们有什么了?
