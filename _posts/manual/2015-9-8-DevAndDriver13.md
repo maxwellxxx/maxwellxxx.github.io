@@ -50,8 +50,10 @@ linux设备驱动模型为内核建立一个统一的设备模型，从而有一
 <li>/dev的形成/proc/devices的形成</li>
 <li>一个硬件驱动设备所做的工作:各种enable(包括各个资源,io口,mem),映射iomap,驱动硬件(初始化,中断处理),暴露设备(块,字,网),对设备文件的请求进行处理(各种ops)</li>
 <li>看module_init的定义,与initcall的关系,驱动模块的工作流程(可分析e1000网卡和nvme驱动)</li>
-<li>udev进程的工作原理,uevent,那些设备会进入到/dev,register_blkdev的工作(仅暴露到/proc/devices)</li>
+<li>udev进程的工作原理,uevent,哪些设备会进入到/dev,register_blkdev的工作(仅暴露到/proc/devices)</li>
 </ul>
+
+系统启动时,因为还没有udev进程,uevent不能被udev接收,由系统启动结束后udev去/sys中去遍历
 
 PCI总线扫描结束后,只扫描到PCI设备层次,一些控制器(SATA,NVME控制器)连接的设备还没有被发现,需要加载控制器驱动后才能发现设备,比如扫描到的硬盘会为之调用add_disk().
 
