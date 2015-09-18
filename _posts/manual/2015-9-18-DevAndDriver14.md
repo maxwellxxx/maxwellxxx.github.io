@@ -1,0 +1,224 @@
+---
+layout: post
+title: DMA相关
+description: linux的一些DMA机制
+category: manual
+---
+
+##什么是DMA为什么需要DMA
+
+>>是什么
+所谓DMA也就是直接内存访问(Directional Memory Access),它允许外部设被暂时成为主设备去访问(读写)计算机内存.
+
+>>为什么
+首先来假设这样一个情况,有一张网卡被连接到计算机.在一般情况下,网卡如果收到数据,就会产生中断通知内核来从网卡取数据.内核对应的中断处理例程(一般由具体网卡驱动程序通过request_irq向内核注册)就会依据网卡的具体设计情况,从网卡的数据缓冲区将数据复制到内核内存空间.如果在网络流量大的情况下,就会不停的产生中断,不停的从网卡缓冲复制数据.这无疑对整体性能有不好的影响.
+
+>>如果网卡自己把数据写到内存就好了!
+是的,但是网卡在一般情况下是以"从设备"这个"角色"工作的,它是不允许直接访问内存的,而且很不幸的是"主设备"正是CPU.如果要让网卡可以直接访问内存,它就需要成为主设备.DMA所做的就是这个工作.
+
+
+##Linux下的DMA
+
+在这里,我们不去讨论具体实现的细节了,因为最近为了工作需要,需要快速学习,就不去抠具体代码了.不过,I'll be back.而且这里也仅仅讨论PCI总线系统的DMA,原因同上.
+
+要使用DMA,有几件事必须要完成:
+<ul>
+<li>我们需要知道并设置设备的DMA寻址能力,以决定从哪里(物理地址的哪里)来分配内存</li>
+<li>我们需要开辟一段内存供DMA使用.</li>
+<li>我们需要知道开辟内存的总线地址,并将这个地址告知设备.</li>
+</ul>
+
+关于第一点,作为一个设备生产商,他当然知道自己几斤几两,一般在设备驱动的probe函数中会对设备进行一些初始化工作(并不局限这些工作),比如e100网卡的情况是这样的:
+
+	2885     if ((err = pci_set_dma_mask(pdev, DMA_BIT_MASK(32)))) { 
+	2886         netif_err(nic, probe, nic->netdev, "No usable DMA configuration, aborting\n");
+	2887         goto err_out_free_res;
+	2888     }  
+
+这里通过pci_set_dma_mask来设置设备为32bitDMA寻址,关于这个函数,真正的工作就是通过pci_read/write_config_word这写来读写设备配置寄存器.
+
+
+第一个问题解决了,来到第二点,对于PCI的DMA分为两种情况,以下概念来自LDD3:
+<ul>
+<li>一致性DMA映射</li>
+<li>流式DMA映射</li>
+</ul>
+
+###一致性DMA映射
+这种类型的映射存在与驱动程序的生命周期中.一致性映射的缓冲区必须可同时被CPU和外围设备访问(其他类型只能在给定时刻由一个设备访问).因此一致性DMA映射必须保存在一致性缓存中.而且建立这种映射代价很大.
+
+###流式DMA映射
+通常为单独的操作建立流式映射.当使用流式映射时,一些体系架构可以最大程度的优化性能,但是这些映射也要服从一组更加严格的访问规则.内核开发者应该优先考虑流式DMA映射.第一是因为在支持映射寄存器的系统中,每个DMA映射使用总线上的一个或者多个映射寄存器,一致性映射具有很长的生命周期,所以会在相当长的时间内占用这些寄存器,甚至在不使用的情况下也不释放这些寄存器.第二是因为在一些硬件中,流式DMA映射可以被优化,而一致性则不会.
+
+
+##使用PCI的DMA
+
+###建立一致性DMA映射
+驱动程序使用一下函数来建立和取消一致性DMA映射
+
+	static inline void *pci_alloc_consistent(
+	                                         struct pci_dev *hwdev, size_t size, 
+	                                         dma_addr_t *dma_handle)
+	static inline void pci_free_consistent(struct pci_dev *hwdev, size_t size,
+           					 void *vaddr, dma_addr_t dma_handle)
+
+而这两个函数其实是一个上层的封装了,可以看下
+
+	 15 static inline void *
+	 16 pci_alloc_consistent(struct pci_dev *hwdev, size_t size,
+	 17              dma_addr_t *dma_handle)
+	 18 {  
+	 19     return dma_alloc_coherent(hwdev == NULL ? NULL : &hwdev->dev, size, dma_handle, GFP_ATOMIC);
+	 20 }  
+	 21    
+
+	 30 static inline void
+	 31 pci_free_consistent(struct pci_dev *hwdev, size_t size,
+	 32             void *vaddr, dma_addr_t dma_handle)
+	 33 {  
+	 34     dma_free_coherent(hwdev == NULL ? NULL : &hwdev->dev, size, vaddr, dma_handle);
+	 35 }  
+
+pci_alloc_consistent传入pci设备结构,需要的缓冲区大小,dma_handle用来保存分配成功后的DMA内存区的总线地址,用来告诉设备去哪里DMA,函数返回的是DMA内存区的虚拟地址,flag一般是GFP_KERNEL或者GFP_ATOMIC(原子上下文中).这个函数本质上是去调用get_free_pages来分配内存的.
+
+这里的总线地址应该能够理解吧?在系统运行时,CPU是通过虚拟地址来寻址的,但是外部设备如果要访问内存就需要知道内存的物理地址(总线地址),这两个地址由两个函数来转换:
+
+	unsiged long virt_to_bus(volatile void* address);//总线地址--->虚拟地址
+	void *bus_to_virt(unsigned long address);//虚拟地址--->总线地址
+
+看下e100中使用的实例,e100的驱动会建立一个一致性DMA内存映射,主要作用我理解的是用来做下自检的,看网卡能不能正常DMA:
+
+	2780 static int e100_alloc(struct nic *nic)
+	2781 {   
+	2782     nic->mem = pci_alloc_consistent(nic->pdev, sizeof(struct mem), 
+	2783         &nic->dma_addr);
+	2784     return nic->mem ? 0 : -ENOMEM;
+	2785 }   
+
+	 676 static int e100_self_test(struct nic *nic) 
+	 677 {                
+	 678     u32 dma_addr = nic->dma_addr + offsetof(struct mem, selftest);
+	 679                  
+	 680     /* Passing the self-test is a pretty good indication
+	 681      * that the device can DMA to/from host memory */
+	 682                  
+	 683     nic->mem->selftest.signature = 0;
+	 684     nic->mem->selftest.result = 0xFFFFFFFF;
+	 685                  
+	 686     iowrite32(selftest | dma_addr, &nic->csr->port);
+	 687     e100_write_flush(nic);
+	 ....
+	 ....
+
+可以看到首先是建立了一致性DMA映射,虚拟地址在nic->mem中,总线地址在nic->dma_addr中.(nic为驱动私有的一个数据结构),而在自检时就通过iowrite32向网卡相关寄存器写入自检命令和DMA内存区总线地址的综合数据(也就是第三步,将地址告知设备),来完成自检.(csr为通过iomap做IO资源映射后的IO资源地址,所以要通过iowrite32来写)
+
+###建立流式DMA映射
+
+PCI设备通过pci_map_single和pci_unmap_single两个函数建立和撤销流式DMA映射,同样的也是上层封装:
+
+	 37 static inline dma_addr_t
+	 38 pci_map_single(struct pci_dev *hwdev, void *ptr, size_t size, int direction)
+	 39 {    
+	 40     return dma_map_single(hwdev == NULL ? NULL : &hwdev->dev, ptr, size, (enum dma_data_direction)direction);
+	 41 }                
+	 
+	 43 static inline void
+	 44 pci_unmap_single(struct pci_dev *hwdev, dma_addr_t dma_addr,
+	 45          size_t size, int direction)
+	 46 {    
+	 47     dma_unmap_single(hwdev == NULL ? NULL : &hwdev->dev, dma_addr, size, (enum dma_data_direction)direction);
+	 48 }  
+
+pci_map_single,传入pci设备结构,用于保存成功后的DMA内存区虚拟地址,DMA区大小,还有传输方向.传输方向有四种(一般使用PCI_DMA_BIDIRECTIONAL就足够了):
+
+	  72 /* This defines the direction arg to the DMA mapping routines. */
+	  73 #define PCI_DMA_BIDIRECTIONAL   0 	//双向
+	  74 #define PCI_DMA_TODEVICE    1	//
+	  75 #define PCI_DMA_FROMDEVICE  2	//
+	  76 #define PCI_DMA_NONE        3	//调试用
+
+关于流式DMA还有几条原则:
+
+<ul>
+<li>只能用于指定方向的数据传输.</li>
+<li>一旦缓冲区被映射,它将属于设备,而不是处理器.直到撤销前驱动程序不能以任何方式访问其中的内存,只有当pci_unmap_single被调用才能安全访问.</li>
+<li>在DMA活动时,不能撤销映射,不然后果很严重.</li>
+</ul>
+
+1,3点比较好理解,关于第二点其实是有特例的,因为所说的不能访问,究其原因是怕CPU高速缓存和内存中内容不一致导致的不安全问题.但是在驱动程序运行过程中难免会出现要去访问DMA内存的情况,就需要以下函数:
+
+	 78 static inline void
+	 79 pci_dma_sync_single_for_cpu(struct pci_dev *hwdev, dma_addr_t dma_handle,
+	 80             size_t size, int direction)
+	 81 {
+	 82     dma_sync_single_for_cpu(hwdev == NULL ? NULL : &hwdev->dev, dma_handle, size, (enum dma_data_direction)direction);
+	 83 }    
+
+pci_dma_sync_single_for_cpu,允许在不撤销DMA的时候能让驱动程序访问内存,应该在处理器访问DMA内存时调用该函数,一旦调用了该函数,DMA内存就"属于"CPU了,可以根据需要访问它.而在当设备访问DMA内存时应该调用以下函数,将控制权给设备.
+
+	 85 static inline void
+	 86 pci_dma_sync_single_for_device(struct pci_dev *hwdev, dma_addr_t dma_handle,        
+	 87             size_t size, int direction)
+	 88 {    
+	 89     dma_sync_single_for_device(hwdev == NULL ? NULL : &hwdev->dev, dma_handle, size, (enum dma_data_direction)direction);
+	 90 }   
+
+其实这两个函数的作用就是显式地刷新缓存到DMA缓存,值得注意的是,其实这两个函数在x86上并没有做任何实质性的工作,因为这些工作都由DMA控制器来接管了.
+
+看下实例吧,依然是e100,用于建立环形DMA缓存区供网卡使用,方式是NAPI的:
+
+	1946 #define RFD_BUF_LEN (sizeof(struct rfd) + VLAN_ETH_FRAME_LEN + ETH_FCS_LEN)
+	1947 static int e100_rx_alloc_skb(struct nic *nic, struct rx *rx)
+	1948 {                
+	1949     if (!(rx->skb = netdev_alloc_skb_ip_align(nic->netdev, RFD_BUF_LEN)))
+	1950         return -ENOMEM;
+	1951                  
+	1952     /* Init, and map the RFD. */
+	1953     skb_copy_to_linear_data(rx->skb, &nic->blank_rfd, sizeof(struct rfd));
+	1954     rx->dma_addr = pci_map_single(nic->pdev, rx->skb->data,
+	1955         RFD_BUF_LEN, PCI_DMA_BIDIRECTIONAL);
+	1956                  
+	1957     if (pci_dma_mapping_error(nic->pdev, rx->dma_addr)) {
+	1958         dev_kfree_skb_any(rx->skb);
+	1959         rx->skb = NULL;
+	1960         rx->dma_addr = 0;
+	1961         return -ENOMEM;
+	1962     }            
+	1963                  
+	1964     /* Link the RFD to end of RFA by linking previous RFD to
+	1965      * this one.  We are safe to touch the previous RFD because
+	1966      * it is protected by the before last buffer's el bit being set */
+	1967     if (rx->prev->skb) {
+	1968         struct rfd *prev_rfd = (struct rfd *)rx->prev->skb->data;
+	1969         put_unaligned_le32(rx->dma_addr, &prev_rfd->link);
+	1970         pci_dma_sync_single_for_device(nic->pdev, rx->prev->dma_addr,      
+	1971             sizeof(struct rfd), PCI_DMA_BIDIRECTIONAL);
+	1972     }            
+	1973                  
+	1974     return 0;    
+	1975 }     
+
+pci_map_single来分配DMA缓冲,在让设备使用前调用pci_dma_sync_single_for_device.随后依然是iowrite32通知网卡将数据包DMA到哪里的事了.
+
+
+##结语
+关于一些细节起始没有好好讲明白,DMA控制器,ISA的总线DMA,Linux下的DMA实现机制.另外还有一致性DMA的DMA池,单页流式DMA等....
+
+还有一个很重要的问题,在e100驱动通知网卡将数据DMA到哪里是,只告诉了网卡DMA环中第一个DMA区的总线地址,在这个DMA写完后网卡是如何知道下一个DMA区在哪里的??
+
+	1931 static inline void e100_start_receiver(struct nic *nic, struct rx *rx)
+	1932 {   
+	1933     if (!nic->rxs) return;
+	1934     if (RU_SUSPENDED != nic->ru_running) return;
+	1935     
+	1936     /* handle init time starts */
+	1937     if (!rx) rx = nic->rxs;
+	1938     
+	1939     /* (Re)start RU if suspended or idle and RFA is non-NULL */
+	1940     if (rx->skb) {
+	1941         e100_exec_cmd(nic, ruc_start, rx->dma_addr);
+	1942         nic->ru_running = RU_RUNNING;
+	1943     }
+	1944 }   
+
+就在1941行,以后就不告诉网卡其他DMA区的地址了,NAPI会区轮循这个DMA环中的数据,但是网卡是怎么知道其他DMA区的总线地址呢?
