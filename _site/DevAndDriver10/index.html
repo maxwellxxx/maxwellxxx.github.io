@@ -42,10 +42,10 @@
 <div id="content">
     <div class="entry">
         <h1 class="entry-title"><a href="/DevAndDriver10" title="Linux设备驱动模型及其他(10)">Linux设备驱动模型及其他(10)</a></h1>
-        <p class="entry-date">2015-07-30</p>
+        <p class="entry-date">2015-08-03</p>
         <blockquote><p>上章讲到所有的PCI总线所需要的地址资源已经分配好了。</p></blockquote>
 
-<h2>为PCI设备分配地址空间</h2>
+<h2>为PCI设备分配资源（验证）</h2>
 
 <p>回到pcibios_resource_survey中，接下来就要为PCI设备分配地址资源了，这里的分配调用了两趟（这个两趟是不是很熟悉？？可以复习下第六篇）pcibios_allocate_resources，这里的“分配”同样也是“追认”。</p>
 
@@ -56,12 +56,12 @@
 390    
 391     DBG("PCI: Allocating resources\n");
 392    
-393     list_for_each_entry(bus, &amp;pci_root_buses, node)
+393     list_for_each_entry(bus, &amp;amp;pci_root_buses, node)
 394         pcibios_allocate_bus_resources(bus);
 395    
-396     list_for_each_entry(bus, &amp;pci_root_buses, node)
+396     list_for_each_entry(bus, &amp;amp;pci_root_buses, node)
 397         pcibios_allocate_resources(bus, 0);
-398     list_for_each_entry(bus, &amp;pci_root_buses, node)
+398     list_for_each_entry(bus, &amp;amp;pci_root_buses, node)
 399         pcibios_allocate_resources(bus, 1);
 400    
 401     e820_reserve_resources_late();
@@ -73,10 +73,10 @@
 308     struct pci_dev *dev;
 309     struct pci_bus *child;
 310 
-311     list_for_each_entry(dev, &amp;bus-&gt;devices, bus_list) {
+311     list_for_each_entry(dev, &amp;amp;bus-&amp;gt;devices, bus_list) {
 312         pcibios_allocate_dev_resources(dev, pass);
 313 
-314         child = dev-&gt;subordinate; 
+314         child = dev-&amp;gt;subordinate; 
 315         if (child)  
 316             pcibios_allocate_resources(child, pass);
 317     }   
@@ -99,47 +99,47 @@
 258 #endif
 259     };
 260    
-261     pci_read_config_word(dev, PCI_COMMAND, &amp;command);
-262     for (i = 0; i &lt; ARRAY_SIZE(idx_range); i++)
-263         for (idx = idx_range[i].start; idx &lt;= idx_range[i].end; idx++) {
-264             r = &amp;dev-&gt;resource[idx];
-265             if (r-&gt;parent)  /* Already allocated */
+261     pci_read_config_word(dev, PCI_COMMAND, &amp;amp;command);
+262     for (i = 0; i &amp;lt; ARRAY_SIZE(idx_range); i++)
+263         for (idx = idx_range[i].start; idx &amp;lt;= idx_range[i].end; idx++) {
+264             r = &amp;amp;dev-&amp;gt;resource[idx];
+265             if (r-&amp;gt;parent)  /* Already allocated */
 266                 continue;
-267             if (!r-&gt;start)  /* Address not assigned at all */
+267             if (!r-&amp;gt;start)  /* Address not assigned at all */
 268                 continue;
-269             if (r-&gt;flags &amp; IORESOURCE_IO)
-270                 disabled = !(command &amp; PCI_COMMAND_IO);
+269             if (r-&amp;gt;flags &amp;amp; IORESOURCE_IO)
+270                 disabled = !(command &amp;amp; PCI_COMMAND_IO);
 271             else
-272                 disabled = !(command &amp; PCI_COMMAND_MEMORY);
+272                 disabled = !(command &amp;amp; PCI_COMMAND_MEMORY);
 273             if (pass == disabled) {
-274                 dev_dbg(&amp;dev-&gt;dev,
+274                 dev_dbg(&amp;amp;dev-&amp;gt;dev,
 275                     "BAR %d: reserving %pr (d=%d, p=%d)\n",
 276                     idx, r, disabled, pass);
-277                 if (pci_claim_resource(dev, idx) &lt; 0) {
-278                     if (r-&gt;flags &amp; IORESOURCE_PCI_FIXED) {
-279                         dev_info(&amp;dev-&gt;dev, "BAR %d %pR is immovable\n",
+277                 if (pci_claim_resource(dev, idx) &amp;lt; 0) {
+278                     if (r-&amp;gt;flags &amp;amp; IORESOURCE_PCI_FIXED) {
+279                         dev_info(&amp;amp;dev-&amp;gt;dev, "BAR %d %pR is immovable\n",
 280                              idx, r);
 281                     } else {
 282                         /* We'll assign a new address later */
 283                         pcibios_save_fw_addr(dev,
-284                                 idx, r-&gt;start);
-285                         r-&gt;end -= r-&gt;start;
-286                         r-&gt;start = 0;
+284                                 idx, r-&amp;gt;start);
+285                         r-&amp;gt;end -= r-&amp;gt;start;
+286                         r-&amp;gt;start = 0;
 287                     }
 288                 }
 289             }
 290         }
 291     if (!pass) {
-292         r = &amp;dev-&gt;resource[PCI_ROM_RESOURCE];
-293         if (r-&gt;flags &amp; IORESOURCE_ROM_ENABLE) {
+292         r = &amp;amp;dev-&amp;gt;resource[PCI_ROM_RESOURCE];
+293         if (r-&amp;gt;flags &amp;amp; IORESOURCE_ROM_ENABLE) {
 294             /* Turn the ROM off, leave the resource region,
 295              * but keep it unregistered. */
 296             u32 reg;
-297             dev_dbg(&amp;dev-&gt;dev, "disabling ROM %pR\n", r);
-298             r-&gt;flags &amp;= ~IORESOURCE_ROM_ENABLE;
-299             pci_read_config_dword(dev, dev-&gt;rom_base_reg, &amp;reg);
-300             pci_write_config_dword(dev, dev-&gt;rom_base_reg,
-301                         reg &amp; ~PCI_ROM_ADDRESS_ENABLE);
+297             dev_dbg(&amp;amp;dev-&amp;gt;dev, "disabling ROM %pR\n", r);
+298             r-&amp;gt;flags &amp;amp;= ~IORESOURCE_ROM_ENABLE;
+299             pci_read_config_dword(dev, dev-&amp;gt;rom_base_reg, &amp;amp;reg);
+300             pci_write_config_dword(dev, dev-&amp;gt;rom_base_reg,
+301                         reg &amp;amp; ~PCI_ROM_ADDRESS_ENABLE);
 302         }
 303     }
 304 } 
@@ -153,15 +153,15 @@
 
 <p>对于ROM区间，则在第一次扫描时进行关闭（pass=0）。ROM区间一般只是在初始化时由BIOS或者具体的设备驱动程序使用，所以现在可以关闭了。如果需要时还可以在设备驱动程序中打开。但是它的地址空间其实还没有分配，对ROM的地址空间分配是和上面没有分配成功的0~6个地址区间一起进行的。</p>
 
-<p>pcibios_resource_survey的工作到这里就完全结束了（这里忽略了e820，和APCI的处理），也意味着pci_subsys_init()的工作也大致结束了。对于不能在原有起始地址上分配所需地址资源的区间，即起始地址已经变成0的区间，已经ROM区间的地址空间要通过后续的工作来分配。但是具体这个工作在哪里执行呢？以前版本内核确实是在pcibios_resource_survey里面直接调用的，新的内核好像改了，也有交给initcall了，具体如下：</p>
+<p>pcibios_resource_survey的工作到这里就完全结束了（这里忽略了e820，和APCI的处理），也意味着pci_subsys_init()的工作也大致结束了。对于不能在原有起始地址上分配所需地址资源的区间，即起始地址已经变成0的区间，以及ROM区间的地址空间要通过后续的工作来分配，注意，资源没有分配成功的总线也是在后面一起处理的。但是具体这个工作在哪里执行呢？以前版本内核确实是在pcibios_resource_survey里面直接调用的，新的内核好像改了，也有交给initcall了，具体如下：</p>
 
 <pre><code>//arch/x86/pci/i386.c
 354 static int __init pcibios_assign_resources(void)
 355 {
 356     struct pci_bus *bus;
 357  
-358     if (!(pci_probe &amp; PCI_ASSIGN_ROMS))
-359         list_for_each_entry(bus, &amp;pci_root_buses, node)
+358     if (!(pci_probe &amp;amp; PCI_ASSIGN_ROMS))
+359         list_for_each_entry(bus, &amp;amp;pci_root_buses, node)
 360             pcibios_allocate_rom_resources(bus);
 361  
 362     pci_assign_unassigned_resources();
@@ -177,7 +177,7 @@
 372 fs_initcall(pcibios_assign_resources);
 </code></pre>
 
-<p>看注释的话已经很明了了，对于pcibios_allocate_rom_resources（）就是进行ROM区间的地址分配，大致工作和分配0~6区间的流程差不多，这里就不分析了。重要的时这里的pci_assign_unassigned_resources()，如果说前面所谓的“分配”时一种追认，这里这个才是真正的分配！</p>
+<p>看注释的话已经很明了了，对于pcibios_allocate_rom_resources（）就是进行ROM区间的地址分配，大致工作和分配0~6区间的流程差不多，这里就不分析了。重要的时这里的pci_assign_unassigned_resources()，如果说前面所谓的“分配”时一种追认，这里这个才是真正的分配！下篇见！</p>
 
 <h2>参考目录</h2>
 
@@ -211,6 +211,8 @@ var duoshuoQuery = {short_name:"maxwellxxx"};
         <h2>Blog</h2>
         <ul class="artical-list">
         
+            <li><a href="/newlife">开启新生活</a></li>
+        
             <li><a href="/buildcm">编译完整CM至HTC ONE（m7 gsm）</a></li>
         
             <li><a href="/AOSP">2015年第一发，不FQ下AOSP(为了百度TAG:Android源代码国内镜像)</a></li>
@@ -226,6 +228,18 @@ var duoshuoQuery = {short_name:"maxwellxxx"};
         <h2>My Manual</h2>
         <ul class="artical-list">
         
+            <li><a href="/ProcessManagement">进程管理核心函数分析</a></li>
+        
+            <li><a href="/DevAndDriver14">DMA相关</a></li>
+        
+            <li><a href="/DevAndDriver13">Linux设备驱动模型及其他(13)</a></li>
+        
+            <li><a href="/DevAndDriver12">Linux设备驱动模型及其他(12)</a></li>
+        
+            <li><a href="/DevAndDriver11">Linux设备驱动模型及其他(11)</a></li>
+        
+            <li><a href="/DevAndDriver10">Linux设备驱动模型及其他(10)</a></li>
+        
             <li><a href="/DevAndDriver9">Linux设备驱动模型及其他(9)</a></li>
         
             <li><a href="/DevAndDriver8">Linux设备驱动模型及其他(8)</a></li>
@@ -237,8 +251,6 @@ var duoshuoQuery = {short_name:"maxwellxxx"};
             <li><a href="/DevAndDriver5">Linux设备驱动模型及其他(5)</a></li>
         
             <li><a href="/DevAndDriver4">Linux设备驱动模型及其他(4)</a></li>
-        
-            <li><a href="/DevAndDriver10">Linux设备驱动模型及其他(10)</a></li>
         
             <li><a href="/DevAndDriver3">Linux设备驱动模型及其他(3)</a></li>
         

@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <!--
+    * Author:         BeiYuu
+    -->
+    <meta charset="utf-8" />
+    <title>进程管理核心函数分析 | maxwellxxx's Blog</title>
+    <meta name="author" content="MaxWellxxx" />
+    <meta name="renderer" content="webkit">
+    <meta name="description" content="MaxWellxxx's Blog" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0">
+    <link rel="stylesheet" href="/css/default.css" type="text/css" />
+    <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
+    <link rel="alternate" type="application/atom+xml" title="Recent Entries" href="/atom.xml" />
+    <script src="/js/jquery-1.7.1.min.js" type="text/javascript"></script>
+</head>
+<body>
+
+    <div class="home-menu">
+        <div class="home-icon-con">
+            <a class="home-menu-icon" href="/">MaxWellxxx</a>
+            <a class="home-follow" href="#" title="Contact Me">+</a>
+        </div>
+        <div class="home-contact">
+            <a href="http://weibo.com/u/1863312387" target="_blank" style="margin-left:-5px;"><img src="http://www.weibo.com/favicon.ico" alt="" width="25"/></a>
+        </div>
+    </div>
+
+    <link rel="stylesheet" href="/js/prettify/prettify.css" />
+<link href="/assets/themes/fancyBox/jquery.fancybox.css?v=2.1.5" rel="stylesheet" media="all" />
+<style type="text/css">
+    body { background:#e8e8e8; }
+    @media screen and (max-width: 1000px){
+        body { background:#fff; }
+    }
+    @media screen and (max-width: 1020px){
+        body { background:#fff; }
+    }
+</style>
+
+<div id="content">
+    <div class="entry">
+        <h1 class="entry-title"><a href="/ProcessManagement" title="进程管理核心函数分析">进程管理核心函数分析</a></h1>
+        <p class="entry-date">2015-11-01</p>
+        <h2>一些说明</h2>
+
+<p>写这篇的主要原因是，纸质笔记对代码分析不方便，对于一些准备知识，本篇并不做诠释。如果有幸哪位读者能看到这篇文章，那建议请先去阅读相关x86CPU工作管理，包括EU，PU，SU各个单元的工作的大致原理。以及linux对PID的管理体系，包括了命名管理等先导知识。另外，在写这篇文章的时候，我自己有些还没有弄懂，有些知识，包括进程信号处理等知识。所以这里叙述的一些东西是不连贯且不成体系的，仅供我自己做笔记使用和给大家做一点参考。</p>
+
+<p>这里的话主要是对两个函数进行一些分析，持续更新，有些我没有弄懂的东西先不做注释，等以后用到了，或者我自己弄懂了再回来补上，希望不要烂尾。</p>
+
+<h2>do_fork()</h2>
+
+<p>废话不说先把代码贴上，今天是来不及做分析了。</p>
+
+<pre><code>/*
+ *  Ok, this is the main fork-routine.
+ *
+ * It copies the process, and if successful kick-starts
+ * it and waits for it to finish using the VM if required.
+ */
+long do_fork(unsigned long clone_flags,
+          unsigned long stack_start,
+          unsigned long stack_size,
+          int __user *parent_tidptr,
+          int __user *child_tidptr)
+{
+    struct task_struct *p;
+    int trace = 0;
+    long nr;
+
+    /*
+     * Determine whether and which event to report to ptracer.  When
+     * called from kernel_thread or CLONE_UNTRACED is explicitly
+     * requested, no event is reported; otherwise, report if the event
+     * for the type of forking is enabled.
+     */
+    if (!(clone_flags &amp; CLONE_UNTRACED)) {
+        if (clone_flags &amp; CLONE_VFORK)
+            trace = PTRACE_EVENT_VFORK;
+        else if ((clone_flags &amp; CSIGNAL) != SIGCHLD)
+            trace = PTRACE_EVENT_CLONE;
+        else
+            trace = PTRACE_EVENT_FORK;
+
+        if (likely(!ptrace_event_enabled(current, trace)))
+            trace = 0;
+    }
+
+    p = copy_process(clone_flags, stack_start, stack_size,
+             child_tidptr, NULL, trace);
+    /*
+     * Do this prior waking up the new thread - the thread pointer
+     * might get invalid after that point, if the thread exits quickly.
+     */
+    if (!IS_ERR(p)) {
+        struct completion vfork;
+        struct pid *pid;
+
+        trace_sched_process_fork(current, p);
+
+        pid = get_task_pid(p, PIDTYPE_PID);
+        nr = pid_vnr(pid);
+
+        if (clone_flags &amp; CLONE_PARENT_SETTID)
+            put_user(nr, parent_tidptr);
+
+        if (clone_flags &amp; CLONE_VFORK) {
+            p-&gt;vfork_done = &amp;vfork;
+            init_completion(&amp;vfork);
+            get_task_struct(p);
+        }
+
+        wake_up_new_task(p);
+
+        /* forking complete and child started to run, tell ptracer */
+        if (unlikely(trace))
+            ptrace_event_pid(trace, pid);
+
+        if (clone_flags &amp; CLONE_VFORK) {
+            if (!wait_for_vfork_done(p, &amp;vfork))
+                ptrace_event_pid(PTRACE_EVENT_VFORK_DONE, pid);
+        }
+
+        put_pid(pid);
+    } else {
+        nr = PTR_ERR(p);
+    }
+    return nr;
+}
+</code></pre>
+
+<h2>copy_process</h2>
+
+<pre><code>/*
+ * This creates a new process as a copy of the old one,
+ * but does not actually start it yet.
+ *
+ * It copies the registers, and all the appropriate
+ * parts of the process environment (as per the clone
+ * flags). The actual kick-off is left to the caller.
+ */
+static struct task_struct *copy_process(unsigned long clone_flags,
+                    unsigned long stack_start,
+                    unsigned long stack_size,
+                    int __user *child_tidptr,
+                    struct pid *pid,
+                    int trace)
+{
+    int retval;
+    struct task_struct *p;
+
+    if ((clone_flags &amp; (CLONE_NEWNS|CLONE_FS)) == (CLONE_NEWNS|CLONE_FS))
+        return ERR_PTR(-EINVAL);
+
+    if ((clone_flags &amp; (CLONE_NEWUSER|CLONE_FS)) == (CLONE_NEWUSER|CLONE_FS))
+        return ERR_PTR(-EINVAL);
+
+    /*
+     * Thread groups must share signals as well, and detached threads
+     * can only be started up within the thread group.
+     */
+    if ((clone_flags &amp; CLONE_THREAD) &amp;&amp; !(clone_flags &amp; CLONE_SIGHAND))
+        return ERR_PTR(-EINVAL);
+
+    /*
+     * Shared signal handlers imply shared VM. By way of the above,
+     * thread groups also imply shared VM. Blocking this case allows
+     * for various simplifications in other code.
+     */
+    if ((clone_flags &amp; CLONE_SIGHAND) &amp;&amp; !(clone_flags &amp; CLONE_VM))
+        return ERR_PTR(-EINVAL);
+
+    /*
+     * Siblings of global init remain as zombies on exit since they are
+     * not reaped by their parent (swapper). To solve this and to avoid
+     * multi-rooted process trees, prevent global and container-inits
+     * from creating siblings.
+     */
+    if ((clone_flags &amp; CLONE_PARENT) &amp;&amp;
+                current-&gt;signal-&gt;flags &amp; SIGNAL_UNKILLABLE)
+        return ERR_PTR(-EINVAL);
+
+    /*
+     * If the new process will be in a different pid or user namespace
+     * do not allow it to share a thread group or signal handlers or
+     * parent with the forking task.
+     */
+    if (clone_flags &amp; CLONE_SIGHAND) {
+        if ((clone_flags &amp; (CLONE_NEWUSER | CLONE_NEWPID)) ||
+            (task_active_pid_ns(current) !=
+                current-&gt;nsproxy-&gt;pid_ns_for_children))
+            return ERR_PTR(-EINVAL);
+    }
+
+    retval = security_task_create(clone_flags);
+    if (retval)
+        goto fork_out;
+
+    retval = -ENOMEM;
+    p = dup_task_struct(current);
+    if (!p)
+        goto fork_out;
+
+    ftrace_graph_init_task(p);
+
+    rt_mutex_init_task(p);
+
+#ifdef CONFIG_PROVE_LOCKING
+    DEBUG_LOCKS_WARN_ON(!p-&gt;hardirqs_enabled);
+    DEBUG_LOCKS_WARN_ON(!p-&gt;softirqs_enabled);
+#endif
+    retval = -EAGAIN;
+    if (atomic_read(&amp;p-&gt;real_cred-&gt;user-&gt;processes) &gt;=
+            task_rlimit(p, RLIMIT_NPROC)) {
+        if (p-&gt;real_cred-&gt;user != INIT_USER &amp;&amp;
+            !capable(CAP_SYS_RESOURCE) &amp;&amp; !capable(CAP_SYS_ADMIN))
+            goto bad_fork_free;
+    }
+    current-&gt;flags &amp;= ~PF_NPROC_EXCEEDED;
+
+    retval = copy_creds(p, clone_flags);
+    if (retval &lt; 0)
+        goto bad_fork_free;
+
+    /*
+     * If multiple threads are within copy_process(), then this check
+     * triggers too late. This doesn't hurt, the check is only there
+     * to stop root fork bombs.
+     */
+    retval = -EAGAIN;
+    if (nr_threads &gt;= max_threads)
+        goto bad_fork_cleanup_count;
+
+    if (!try_module_get(task_thread_info(p)-&gt;exec_domain-&gt;module))
+        goto bad_fork_cleanup_count;
+
+    delayacct_tsk_init(p);  /* Must remain after dup_task_struct() */
+    p-&gt;flags &amp;= ~(PF_SUPERPRIV | PF_WQ_WORKER);
+    p-&gt;flags |= PF_FORKNOEXEC;
+    INIT_LIST_HEAD(&amp;p-&gt;children);
+    INIT_LIST_HEAD(&amp;p-&gt;sibling);
+    rcu_copy_process(p);
+    p-&gt;vfork_done = NULL;
+    spin_lock_init(&amp;p-&gt;alloc_lock);
+
+    init_sigpending(&amp;p-&gt;pending);
+
+    p-&gt;utime = p-&gt;stime = p-&gt;gtime = 0;
+    p-&gt;utimescaled = p-&gt;stimescaled = 0;
+#ifndef CONFIG_VIRT_CPU_ACCOUNTING_NATIVE
+    p-&gt;prev_cputime.utime = p-&gt;prev_cputime.stime = 0;
+#endif
+#ifdef CONFIG_VIRT_CPU_ACCOUNTING_GEN
+    seqlock_init(&amp;p-&gt;vtime_seqlock);
+    p-&gt;vtime_snap = 0;
+    p-&gt;vtime_snap_whence = VTIME_SLEEPING;
+#endif
+
+#if defined(SPLIT_RSS_COUNTING)
+    memset(&amp;p-&gt;rss_stat, 0, sizeof(p-&gt;rss_stat));
+#endif
+
+    p-&gt;default_timer_slack_ns = current-&gt;timer_slack_ns;
+
+    task_io_accounting_init(&amp;p-&gt;ioac);
+    acct_clear_integrals(p);
+
+    posix_cpu_timers_init(p);
+
+    p-&gt;start_time = ktime_get_ns();
+    p-&gt;real_start_time = ktime_get_boot_ns();
+    p-&gt;io_context = NULL;
+    p-&gt;audit_context = NULL;
+    if (clone_flags &amp; CLONE_THREAD)
+        threadgroup_change_begin(current);
+    cgroup_fork(p);
+#ifdef CONFIG_NUMA
+    p-&gt;mempolicy = mpol_dup(p-&gt;mempolicy);
+    if (IS_ERR(p-&gt;mempolicy)) {
+        retval = PTR_ERR(p-&gt;mempolicy);
+        p-&gt;mempolicy = NULL;
+        goto bad_fork_cleanup_threadgroup_lock;
+    }
+#endif
+#ifdef CONFIG_CPUSETS
+    p-&gt;cpuset_mem_spread_rotor = NUMA_NO_NODE;
+    p-&gt;cpuset_slab_spread_rotor = NUMA_NO_NODE;
+    seqcount_init(&amp;p-&gt;mems_allowed_seq);
+#endif
+#ifdef CONFIG_TRACE_IRQFLAGS
+    p-&gt;irq_events = 0;
+    p-&gt;hardirqs_enabled = 0;
+    p-&gt;hardirq_enable_ip = 0;
+    p-&gt;hardirq_enable_event = 0;
+    p-&gt;hardirq_disable_ip = _THIS_IP_;
+    p-&gt;hardirq_disable_event = 0;
+    p-&gt;softirqs_enabled = 1;
+    p-&gt;softirq_enable_ip = _THIS_IP_;
+    p-&gt;softirq_enable_event = 0;
+    p-&gt;softirq_disable_ip = 0;
+    p-&gt;softirq_disable_event = 0;
+    p-&gt;hardirq_context = 0;
+    p-&gt;softirq_context = 0;
+#endif
+#ifdef CONFIG_LOCKDEP
+    p-&gt;lockdep_depth = 0; /* no locks held yet */
+    p-&gt;curr_chain_key = 0;
+    p-&gt;lockdep_recursion = 0;
+#endif
+
+#ifdef CONFIG_DEBUG_MUTEXES
+    p-&gt;blocked_on = NULL; /* not blocked yet */
+#endif
+#ifdef CONFIG_BCACHE
+    p-&gt;sequential_io    = 0;
+    p-&gt;sequential_io_avg    = 0;
+#endif
+
+    /* Perform scheduler related setup. Assign this task to a CPU. */
+    retval = sched_fork(clone_flags, p);
+    if (retval)
+        goto bad_fork_cleanup_policy;
+
+    retval = perf_event_init_task(p);
+    if (retval)
+        goto bad_fork_cleanup_policy;
+    retval = audit_alloc(p);
+    if (retval)
+        goto bad_fork_cleanup_perf;
+    /* copy all the process information */
+    shm_init_task(p);
+    retval = copy_semundo(clone_flags, p);
+    if (retval)
+        goto bad_fork_cleanup_audit;
+    retval = copy_files(clone_flags, p);
+    if (retval)
+        goto bad_fork_cleanup_semundo;
+    retval = copy_fs(clone_flags, p);
+    if (retval)
+        goto bad_fork_cleanup_files;
+    retval = copy_sighand(clone_flags, p);
+    if (retval)
+        goto bad_fork_cleanup_fs;
+    retval = copy_signal(clone_flags, p);
+    if (retval)
+        goto bad_fork_cleanup_sighand;
+    retval = copy_mm(clone_flags, p);
+    if (retval)
+        goto bad_fork_cleanup_signal;
+    retval = copy_namespaces(clone_flags, p);
+    if (retval)
+        goto bad_fork_cleanup_mm;
+    retval = copy_io(clone_flags, p);
+    if (retval)
+        goto bad_fork_cleanup_namespaces;
+    retval = copy_thread(clone_flags, stack_start, stack_size, p);
+    if (retval)
+        goto bad_fork_cleanup_io;
+
+    if (pid != &amp;init_struct_pid) {
+        retval = -ENOMEM;
+        pid = alloc_pid(p-&gt;nsproxy-&gt;pid_ns_for_children);
+        if (!pid)
+            goto bad_fork_cleanup_io;
+    }
+
+    p-&gt;set_child_tid = (clone_flags &amp; CLONE_CHILD_SETTID) ? child_tidptr : NULL;
+    /*
+     * Clear TID on mm_release()?
+     */
+    p-&gt;clear_child_tid = (clone_flags &amp; CLONE_CHILD_CLEARTID) ? child_tidptr : NULL;
+#ifdef CONFIG_BLOCK
+    p-&gt;plug = NULL;
+#endif
+#ifdef CONFIG_FUTEX
+    p-&gt;robust_list = NULL;
+#ifdef CONFIG_COMPAT
+    p-&gt;compat_robust_list = NULL;
+#endif
+    INIT_LIST_HEAD(&amp;p-&gt;pi_state_list);
+    p-&gt;pi_state_cache = NULL;
+#endif
+    /*
+     * sigaltstack should be cleared when sharing the same VM
+     */
+    if ((clone_flags &amp; (CLONE_VM|CLONE_VFORK)) == CLONE_VM)
+        p-&gt;sas_ss_sp = p-&gt;sas_ss_size = 0;
+
+    /*
+     * Syscall tracing and stepping should be turned off in the
+     * child regardless of CLONE_PTRACE.
+     */
+    user_disable_single_step(p);
+    clear_tsk_thread_flag(p, TIF_SYSCALL_TRACE);
+#ifdef TIF_SYSCALL_EMU
+    clear_tsk_thread_flag(p, TIF_SYSCALL_EMU);
+#endif
+    clear_all_latency_tracing(p);
+
+    /* ok, now we should be set up.. */
+    p-&gt;pid = pid_nr(pid);
+    if (clone_flags &amp; CLONE_THREAD) {
+        p-&gt;exit_signal = -1;
+        p-&gt;group_leader = current-&gt;group_leader;
+        p-&gt;tgid = current-&gt;tgid;
+    } else {
+        if (clone_flags &amp; CLONE_PARENT)
+            p-&gt;exit_signal = current-&gt;group_leader-&gt;exit_signal;
+        else
+            p-&gt;exit_signal = (clone_flags &amp; CSIGNAL);
+        p-&gt;group_leader = p;
+        p-&gt;tgid = p-&gt;pid;
+    }
+
+    p-&gt;nr_dirtied = 0;
+    p-&gt;nr_dirtied_pause = 128 &gt;&gt; (PAGE_SHIFT - 10);
+    p-&gt;dirty_paused_when = 0;
+
+    p-&gt;pdeath_signal = 0;
+    INIT_LIST_HEAD(&amp;p-&gt;thread_group);
+    p-&gt;task_works = NULL;
+
+    /*
+     * Make it visible to the rest of the system, but dont wake it up yet.
+     * Need tasklist lock for parent etc handling!
+     */
+    write_lock_irq(&amp;tasklist_lock);
+
+    /* CLONE_PARENT re-uses the old parent */
+    if (clone_flags &amp; (CLONE_PARENT|CLONE_THREAD)) {
+        p-&gt;real_parent = current-&gt;real_parent;
+        p-&gt;parent_exec_id = current-&gt;parent_exec_id;
+    } else {
+        p-&gt;real_parent = current;
+        p-&gt;parent_exec_id = current-&gt;self_exec_id;
+    }
+
+    spin_lock(&amp;current-&gt;sighand-&gt;siglock);
+
+    /*
+     * Copy seccomp details explicitly here, in case they were changed
+     * before holding sighand lock.
+     */
+    copy_seccomp(p);
+
+    /*
+     * Process group and session signals need to be delivered to just the
+     * parent before the fork or both the parent and the child after the
+     * fork. Restart if a signal comes in before we add the new process to
+     * it's process group.
+     * A fatal signal pending means that current will exit, so the new
+     * thread can't slip out of an OOM kill (or normal SIGKILL).
+    */
+    recalc_sigpending();
+    if (signal_pending(current)) {
+        spin_unlock(&amp;current-&gt;sighand-&gt;siglock);
+        write_unlock_irq(&amp;tasklist_lock);
+        retval = -ERESTARTNOINTR;
+        goto bad_fork_free_pid;
+    }
+
+    if (likely(p-&gt;pid)) {
+        ptrace_init_task(p, (clone_flags &amp; CLONE_PTRACE) || trace);
+
+        init_task_pid(p, PIDTYPE_PID, pid);
+        if (thread_group_leader(p)) {
+            init_task_pid(p, PIDTYPE_PGID, task_pgrp(current));
+            init_task_pid(p, PIDTYPE_SID, task_session(current));
+
+            if (is_child_reaper(pid)) {
+                ns_of_pid(pid)-&gt;child_reaper = p;
+                p-&gt;signal-&gt;flags |= SIGNAL_UNKILLABLE;
+            }
+
+            p-&gt;signal-&gt;leader_pid = pid;
+            p-&gt;signal-&gt;tty = tty_kref_get(current-&gt;signal-&gt;tty);
+            list_add_tail(&amp;p-&gt;sibling, &amp;p-&gt;real_parent-&gt;children);
+            list_add_tail_rcu(&amp;p-&gt;tasks, &amp;init_task.tasks);
+            attach_pid(p, PIDTYPE_PGID);
+            attach_pid(p, PIDTYPE_SID);
+            __this_cpu_inc(process_counts);
+        } else {
+            current-&gt;signal-&gt;nr_threads++;
+            atomic_inc(&amp;current-&gt;signal-&gt;live);
+            atomic_inc(&amp;current-&gt;signal-&gt;sigcnt);
+            list_add_tail_rcu(&amp;p-&gt;thread_group,
+                      &amp;p-&gt;group_leader-&gt;thread_group);
+            list_add_tail_rcu(&amp;p-&gt;thread_node,
+                      &amp;p-&gt;signal-&gt;thread_head);
+        }
+        attach_pid(p, PIDTYPE_PID);
+        nr_threads++;
+    }
+
+    total_forks++;
+    spin_unlock(&amp;current-&gt;sighand-&gt;siglock);
+    syscall_tracepoint_update(p);
+    write_unlock_irq(&amp;tasklist_lock);
+
+    proc_fork_connector(p);
+    cgroup_post_fork(p);
+    if (clone_flags &amp; CLONE_THREAD)
+        threadgroup_change_end(current);
+    perf_event_fork(p);
+
+    trace_task_newtask(p, clone_flags);
+    uprobe_copy_process(p, clone_flags);
+
+    return p;
+
+bad_fork_free_pid:
+    if (pid != &amp;init_struct_pid)
+        free_pid(pid);
+bad_fork_cleanup_io:
+    if (p-&gt;io_context)
+        exit_io_context(p);
+bad_fork_cleanup_namespaces:
+    exit_task_namespaces(p);
+bad_fork_cleanup_mm:
+    if (p-&gt;mm)
+        mmput(p-&gt;mm);
+bad_fork_cleanup_signal:
+    if (!(clone_flags &amp; CLONE_THREAD))
+        free_signal_struct(p-&gt;signal);
+bad_fork_cleanup_sighand:
+    __cleanup_sighand(p-&gt;sighand);
+bad_fork_cleanup_fs:
+    exit_fs(p); /* blocking */
+bad_fork_cleanup_files:
+    exit_files(p); /* blocking */
+bad_fork_cleanup_semundo:
+    exit_sem(p);
+bad_fork_cleanup_audit:
+    audit_free(p);
+bad_fork_cleanup_perf:
+    perf_event_free_task(p);
+bad_fork_cleanup_policy:
+#ifdef CONFIG_NUMA
+    mpol_put(p-&gt;mempolicy);
+bad_fork_cleanup_threadgroup_lock:
+#endif
+    if (clone_flags &amp; CLONE_THREAD)
+        threadgroup_change_end(current);
+    delayacct_tsk_free(p);
+    module_put(task_thread_info(p)-&gt;exec_domain-&gt;module);
+bad_fork_cleanup_count:
+    atomic_dec(&amp;p-&gt;cred-&gt;user-&gt;processes);
+    exit_creds(p);
+bad_fork_free:
+    free_task(p);
+fork_out:
+    return ERR_PTR(retval);
+}
+</code></pre>
+
+<!-- 多说评论框 start -->
+	<div class="ds-thread" data-thread-key="进程管理核心函数分析" data-title="进程管理核心函数分析" data-url="/ProcessManagement"></div>
+<!-- 多说评论框 end -->
+<!-- 多说公共JS代码 start (一个网页只需插入一次) -->
+<script type="text/javascript">
+var duoshuoQuery = {short_name:"maxwellxxx"};
+	(function() {
+		var ds = document.createElement('script');
+		ds.type = 'text/javascript';ds.async = true;
+		ds.src = (document.location.protocol == 'https:' ? 'https:' : 'http:') + '//static.duoshuo.com/embed.js';
+		ds.charset = 'UTF-8';
+		(document.getElementsByTagName('head')[0] 
+		 || document.getElementsByTagName('body')[0]).appendChild(ds);
+	})();
+	</script>
+<!-- 多说公共JS代码 end -->
+    </div>
+
+    <div class="sidenav">
+        <iframe width="100%" height="75" class="share_self"  frameborder="0" scrolling="no" src="http://widget.weibo.com/weiboshow/index.php?language=&width=0&height=75&fansRow=2&ptype=1&speed=0&skin=5&isTitle=0&noborder=0&isWeibo=0&isFans=0&uid=1863312387&verifier=996dff3a&dpc=1"></iframe>
+    </div>
+
+    <div class="sidenav">
+        <h2>Blog</h2>
+        <ul class="artical-list">
+        
+            <li><a href="/newlife">开启新生活</a></li>
+        
+            <li><a href="/buildcm">编译完整CM至HTC ONE（m7 gsm）</a></li>
+        
+            <li><a href="/AOSP">2015年第一发，不FQ下AOSP(为了百度TAG:Android源代码国内镜像)</a></li>
+        
+            <li><a href="/pinglun">这下大家满足了吧</a></li>
+        
+            <li><a href="/yougan">我是喷子</a></li>
+        
+            <li><a href="/newstory">新的故事</a></li>
+        
+        </ul>
+
+        <h2>My Manual</h2>
+        <ul class="artical-list">
+        
+            <li><a href="/ProcessManagement">进程管理核心函数分析</a></li>
+        
+            <li><a href="/DevAndDriver14">DMA相关</a></li>
+        
+            <li><a href="/DevAndDriver13">Linux设备驱动模型及其他(13)</a></li>
+        
+            <li><a href="/DevAndDriver12">Linux设备驱动模型及其他(12)</a></li>
+        
+            <li><a href="/DevAndDriver11">Linux设备驱动模型及其他(11)</a></li>
+        
+            <li><a href="/DevAndDriver10">Linux设备驱动模型及其他(10)</a></li>
+        
+            <li><a href="/DevAndDriver9">Linux设备驱动模型及其他(9)</a></li>
+        
+            <li><a href="/DevAndDriver8">Linux设备驱动模型及其他(8)</a></li>
+        
+            <li><a href="/DevAndDriver7">Linux设备驱动模型及其他(7)</a></li>
+        
+            <li><a href="/DevAndDriver6">Linux设备驱动模型及其他(6)</a></li>
+        
+            <li><a href="/DevAndDriver5">Linux设备驱动模型及其他(5)</a></li>
+        
+            <li><a href="/DevAndDriver4">Linux设备驱动模型及其他(4)</a></li>
+        
+            <li><a href="/DevAndDriver3">Linux设备驱动模型及其他(3)</a></li>
+        
+            <li><a href="/DevAndDriver2">Linux设备驱动模型及其他(2)</a></li>
+        
+            <li><a href="/DevAndDriver1">Linux设备驱动模型及其他(1)</a></li>
+        
+            <li><a href="/linuxmemblock">Linux内核初期内存管理---memblock</a></li>
+        
+            <li><a href="/linuxearlymemory">Linux内核初始化阶段内存管理的几种阶段(1)</a></li>
+        
+            <li><a href="/linuxmemory">Linux高端内存映射等等</a></li>
+        
+            <li><a href="/linuxmemmanage">Linux初始化阶段内存管理框架初始化</a></li>
+        
+            <li><a href="/Linux-File">Linux文件I/O、系统基础编程总结</a></li>
+        
+            <li><a href="/Linux-Unix">Linux/Unix系统编程</a></li>
+        
+        </ul>
+
+        <h2>Project</h2>
+        <ul class="artical-list">
+        
+            <li><a href="/linux-swap">扩展Ubuntu Swap分区</a></li>
+        
+            <li><a href="/tinyos-ana">Tinyos概要分析</a></li>
+        
+            <li><a href="/tinyos">Ubuntu 下Tinyos开发环境的搭建</a></li>
+        
+            <li><a href="/github-pages">使用Github Pages建独立博客</a></li>
+        
+        </ul>
+    </div>
+</div>
+  
+<script src="/js/post.js" type="text/javascript"></script>
+<script type="text/javascript" src="/assets/themes/fancyBox/jquery.fancybox.pack.js?v=2.1.5"></script>
+<script>
+// 给图片添加链接
+$(document).ready(function() {
+  $("p img").each(function() {
+    var strA = "<a id='yourid' href='" + this.src + "'></a>";
+    $(this).wrapAll(strA);
+  });
+});
+
+// fancybox
+$("#yourid").fancybox({
+  openEffect    : 'elastic',
+  closeEffect   : 'elastic',
+});
+</script>
+
+
+
+    <script type="text/javascript">
+        $(function(){
+            $('.home-follow').click(function(e){
+                e.preventDefault();
+
+                if($('.home-contact').is(':visible')){
+                    $('.home-contact').slideUp(100);
+                }else{
+                    $('.home-contact').slideDown(100);
+                }
+            });
+        })
+    </script>
+</body>
+</html>
