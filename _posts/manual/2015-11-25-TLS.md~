@@ -296,11 +296,17 @@ gs的值时0x33没错，先不着急，我们知道选择子也是有个格式�
 	//nptl/pthread_create.c 
 	versioned_symbol (libpthread, __pthread_create_2_1, pthread_create, GLIBC_2_1);      
 	//pthread_create 实际实现为__pthread_create_2_1，不过跟编译新glic的编译环境有关。
-	__pthread_create_2_1()---->ALLOCATE_STACK()------->create_thread()
-										|
-										|
-										|
-									    ARCH_CLONE()
+	__pthread_create_2_1()
+	   |	
+	   |
+	   |
+	ALLOCATE_STACK()
+	   |	
+	   |
+	   |
+	create_thread()------->ARCH_CLONE()
+									
+									    
 ##参考目录
 [1] http://blog.csdn.net/lqk1985/article/details/2905259
 
