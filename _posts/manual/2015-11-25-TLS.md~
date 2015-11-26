@@ -1,0 +1,307 @@
+---
+layout: post
+title: Linux线程TLS（Thread-Local Storage）相关 GS段寄存器作用分析
+description: 2015.11.24 南京很冷
+category: manual
+---
+
+##引
+
+继上篇写完switch_to后，我就顺着去分析了下\_\_switch_to这个函数，就看到了这么一段：
+
+	//arch/x86/kernel/process_32.c 
+	245 __visible __notrace_funcgraph struct task_struct *
+	246 __switch_to(struct task_struct *prev_p, struct task_struct *next_p)
+	247 {
+	248     struct thread_struct *prev = &prev_p->thread,
+	249                  *next = &next_p->thread;
+	250     int cpu = smp_processor_id();
+	251     struct tss_struct *tss = &per_cpu(init_tss, cpu);
+	252     fpu_switch_t fpu;
+	253    
+	254     /* never put a printk in __switch_to... printk() calls wake_up*() indirectly */
+	255    
+	256     fpu = switch_fpu_prepare(prev_p, next_p, cpu);
+	257    
+	258     /*
+	259      * Reload esp0.
+	260      */
+	261     load_sp0(tss, next);
+	262    
+	263     /*
+	264      * Save away %gs. No need to save %fs, as it was saved on the
+	265      * stack on entry.  No need to save %es and %ds, as those are
+	266      * always kernel segments while inside the kernel.  Doing this
+	267      * before setting the new TLS descriptors avoids the situation
+	268      * where we temporarily have non-reloadable segments in %fs
+	269      * and %gs.  This could be an issue if the NMI handler ever
+	270      * used %fs or %gs (it does not today), or if the kernel is
+	271      * running inside of a hypervisor layer.
+	272      */
+	273     lazy_save_gs(prev->gs);
+	274    
+	275     /*
+	276      * Load the per-thread Thread-Local Storage descriptor.
+	277      */
+	278     load_TLS(next, cpu);
+	..........................
+	..........................
+	317     /*
+	318      * Restore %gs if needed (which is common)
+	319      */
+	320     if (prev->gs | next->gs)
+	321         lazy_load_gs(next->gs);
+	322     
+	323     switch_fpu_finish(next_p, fpu);
+	324     
+	325     this_cpu_write(current_task, next_p);
+	326     
+	327     return prev_p;
+	328 }  
+
+上篇里面也已经讲过\_\_switch_to这个函数主要是用来切换硬件上下文的，并将prev的地址给eax寄存器。而它确实也是这么干的，包括将next进程的内核栈底esp0写到tss段等等。但是这边有个困惑的是这里的gs寄存器和TLS，也就是代码的273,278，321行。
+
+##分析
+
+首先看下lazy_save_gs(prev->gs)
+
+	#define lazy_save_gs(v)     savesegment(gs, (v))                     
+	#define savesegment(seg, value)   ("mov %%" #seg ",%0":"=r" (value) : : "memory")	//Save a segment register away 
+
+也就是说，lazy_save_gs(prev->gs)执行的操作时将gs段寄存器的值保存到prev->gs，这个还是比较好理解的，但是我们还是没有弄懂为啥要保存gs段寄存器，gs寄存器的作用又是什么呢？首先我们来分析下为啥要来保存gs段寄存器。
+
+
+**我们知道，进程的切换是发生在内核态的，也就是说进程肯定会通过系统调用进入了内核，系统调用期间（处理软中断）CPU查询IDTR指向的中断向量表获得软中断的cs和eip，发现如果需要切换堆栈，就会从TSS段的隐藏cache获得当前进程内核堆栈的ss和esp，然后就会将ss，esp，EFLAGS，cs，eip保存到内核堆栈上，然后就装载内核的ss和esp到寄存器，装载软中断cs，eip到寄存器，进入到内核进行软中断处理。**
+
+**而软中断处理一开始就二话不说将es，ds，eax，ebp，edi，esi，edx，ecx，ebx都保存到内核栈上(SAVE_ALL)，而这里并没有涉及到gs段寄存器(其实还有个fs段寄存器)**
+
+通过上面我们可以发现，保存gs确实是必须的，但是我们还是没有弄懂gs段寄存器的作用。。。所以我们首先得弄明白gs段寄存器保存的段选择子是啥？？因为系统调用时没有保存gs寄存器，所以我们可以肯定gs急促器对于一个进程来说无论在用户态还是内核态都是不变的，所以做个实验好了。。。(以下代码在x86 32bit能正常运行)
+
+	maxwellxxx@ubuntu:~$ cat test1.c
+	#include <stdio.h>
+
+	#define getsegment(seg,value) asm("mov %%" #seg ",%0":"=a" (value) : : )
+
+	int main()
+	{
+		int a=0;
+		getsegment(gs,a);
+		printf("The gs value is 0x%x\n",a);
+	}
+	maxwellxxx@ubuntu:~$ ./test1 
+	The gs value is 0x33
+
+gs的值时0x33没错，先不着急，我们知道选择子也是有个格式的
+
+	15       3  2   0
+	-----------------
+	|Index   |TI|RPL|
+	-----------------
+	gs=0x33=0110011
+
+所以gs指向在gdt(全局描述符表)的第6项。。。弄明白了这个我们就看下gdt第6项存的时什么描述子吧！
+
+	//arch/x86/include/asm/segment.h
+	/*
+	 * The layout of the per-CPU GDT under Linux:
+	 *
+	 *   0 - null
+	 *   1 - reserved
+	 *   2 - reserved
+	 *   3 - reserved
+	 *
+	 *   4 - unused			<==== new cacheline
+	 *   5 - unused
+	 *
+	 *  ------- start of TLS (Thread-Local Storage) segments:
+	 *
+	 *   6 - TLS segment #1			[ glibc's TLS segment ]
+	 *   7 - TLS segment #2			[ Wine's %fs Win32 segment ]
+	 *   8 - TLS segment #3
+	 *   9 - reserved
+	 *  10 - reserved
+	 *  11 - reserved
+	 *
+	 *  ------- start of kernel segments:
+	 *
+	 *  12 - kernel code segment		<==== new cacheline
+	 *  13 - kernel data segment
+	 *  14 - default user CS
+	 *  15 - default user DS
+	 *  16 - TSS
+	 *  17 - LDT
+	 *  18 - PNPBIOS support (16->32 gate)
+	 *  19 - PNPBIOS support
+	 *  20 - PNPBIOS support
+	 *  21 - PNPBIOS support
+	 *  22 - PNPBIOS support
+	 *  23 - APM BIOS support
+	 *  24 - APM BIOS support
+	 *  25 - APM BIOS support
+	 *
+	 *  26 - ESPFIX small SS
+	 *  27 - per-cpu			[ offset to per-cpu data area ]
+	 *  28 - stack_canary-20		[ for stack protector ]
+	 *  29 - unused
+	 *  30 - unused
+	 *  31 - TSS for double fault handler
+	 */
+
+可以看到第6项就是存的glibc实现下的TLS段描述子，顺带提一下第七项时wine实现下的win32的段描述子（选择子存在fs寄存器的节奏？）。哈哈，情况时越来越明朗了呢，那我们就来看看glibc实现下的TLS段到底是个啥吧？
+
+##TLS（Thread-Local Storage）[1~3]
+每个线程除了共享进程的资源外还拥有各自的私有资源：一个寄存器组（或者说是线程上下文）；一个专属的堆栈；一个专属的消息队列；一个专属的Thread Local Storage（TLS）；一个专属的结构化异常处理串链。
+
+###概念
+线程局部存储（Thread Local Storage，TLS）用来将数据与一个正在执行的指定线程关联起来。进程中的全局变量与函数内定义的静态(static)变量，是各个线程都可以访问的共享变量。在一个线程修改的内存内容，对所有线程都生效。这是一个优点也是一个缺点。说它是优点，线程的数据交换变得非常快捷。说它是缺点，一个线程死掉了，其它线程也性命不保; 多个线程访问共享数据，需要昂贵的同步开销，也容易造成同步相关的BUG。
+
+如果需要在一个线程内部的各个函数调用都能访问、但其它线程不能访问的变量（被称为static memory local to a thread 线程局部静态变量），就需要新的机制来实现。这就是TLS。
+
+线程局部存储在不同的平台有不同的实现，可移植性不太好。幸好要实现线程局部存储并不难，最简单的办法就是建立一个全局表，通过当前线程ID去查询相应的数据，因为各个线程的ID不同，查到的数据自然也不同了。大多数平台都提供了线程局部存储的方法，无需要我们自己去实现：
+
+	linux:
+	　　int pthread_key_create(pthread_key_t *key, void (*destructor)(void*));
+	　　int pthread_key_delete(pthread_key_t key);
+	　　void *pthread_getspecific(pthread_key_t key);
+	　　int pthread_setspecific(pthread_key_t key, const void *value);
+
+
+###功能
+它主要是为了避免多个线程同时访存同一全局变量或者静态变量时所导致的冲突，尤其是多个线程同时需要修改这一变量时。为了解决这个问题，我们可以通过TLS机制，为每一个使用该全局变量的线程都提供一个变量值的副本，每一个线程均可以独立地改变自己的副本，而不会和其它线程的副本冲突。从线程的角度看，就好像每一个线程都完全拥有该变量。而从全局变量的角度上来看，就好像一个全局变量被克隆成了多份副本，而每一份副本都可以被一个线程独立地改变。
+
+###例子
+
+	/*-----------------------------pthread_private_data.c--------------------------------------*/
+	/*三个线程：主线程,th1,th2各自有自己的私有数据区域
+	*/
+	#include <stdio.h>
+	#include <string.h>
+	#include <stdlib.h>
+	#include <pthread.h>
+
+	static pthread_key_t str_key;
+	//define a static variable that only be allocated once
+	static pthread_once_t str_alloc_key_once=PTHREAD_ONCE_INIT;
+	static void str_alloc_key();
+	static void str_alloc_destroy_accu(void* accu);
+
+	char* str_accumulate(const char* s)
+	{    char* accu;
+	    
+	    pthread_once(&str_alloc_key_once,str_alloc_key);//str_alloc_key()这个函数只调用一次
+	    accu=(char*)pthread_getspecific(str_key);//取得该线程对应的关键字所关联的私有数据空间首址
+	    if(accu==NULL)//每个新刚创建的线程这个值一定是NULL（没有指向任何已分配的数据空间）
+	    {    accu=malloc(1024);//用上面取得的值指向新分配的空间
+		if(accu==NULL)    return NULL;
+		accu[0]=0;//为后面strcat()作准备
+	      
+		pthread_setspecific(str_key,(void*)accu);//设置该线程对应的关键字关联的私有数据空间
+		printf("Thread %lx: allocating buffer at %p\n",pthread_self(),accu);
+	     }
+	     strcat(accu,s);
+	     return accu;
+	}
+	//设置私有数据空间的释放内存函数
+	static void str_alloc_key()
+	{    pthread_key_create(&str_key,str_alloc_destroy_accu);/*创建关键字及其对应的内存释放函数，当进程创建关键字后，这个关键字是NULL。之后每创建一个线程os都会分给一个对应的关键字，关键字关联线程私有数据空间首址，初始化时是NULL*/
+	    printf("Thread %lx: allocated key %d\n",pthread_self(),str_key);
+	}
+	/*线程退出时释放私有数据空间,注意主线程必须调用pthread_exit()(调用exit()不行)才能执行该函数释放accu指向的空间*/
+	static void str_alloc_destroy_accu(void* accu)
+	{    printf("Thread %lx: freeing buffer at %p\n",pthread_self(),accu);
+	    free(accu);
+	}
+	//线程入口函数
+	void* process(void *arg)
+	{    char* res;
+	    res=str_accumulate("Resule of ");
+	    if(strcmp((char*)arg,"first")==0)
+		sleep(3);
+	    res=str_accumulate((char*)arg);
+	    res=str_accumulate(" thread");
+	    printf("Thread %lx: \"%s\"\n",pthread_self(),res);
+	    return NULL;
+	}
+	//主线程函数
+	int main(int argc,char* argv[])
+	{    char* res;
+	    pthread_t th1,th2;
+	    res=str_accumulate("Result of ");
+	    pthread_create(&th1,NULL,process,(void*)"first");
+	    pthread_create(&th2,NULL,process,(void*)"second");
+	    res=str_accumulate("initial thread");
+	    printf("Thread %lx: \"%s\"\n",pthread_self(),res);
+	    pthread_join(th1,NULL);
+	    pthread_join(th2,NULL);
+	    pthread_exit(0);
+	} 
+	/*------------------------------------------------------------------*/
+	[root@10h57 c]# ./pthread_private_data
+	Thread b7fdd6c0 : allocated key 0
+	Thread b7fdd6c0: allocating buffer at 0x911c008
+	Thread b7fdd6c0: "Result of initial thread"
+	Thread b7fdcb90: allocating buffer at 0x911c938
+	Thread b75dbb90: allocating buffer at 0x911cd40
+	Thread b75dbb90: "Resule of second thread"
+	Thread b75dbb90: freeing buffer at 0x911cd40
+	Thread b7fdcb90: "Resule of first thread"
+	Thread b7fdcb90: freeing buffer at 0x911c938
+	Thread b7fdd6c0: freeing buffer at 0x911c008
+
+**set是把一个变量的地址告诉key，一般放在变量定义之后，get会把这个地址读出来，然后你自己转义成相应的类型再去操作，注意变量的有效期。只不过，在不同的线程里可以操作同一个key，他们不会冲突，比如线程a,b,c set同样的key，分别get得到的地址会是之前各自传进去的值。这样做的意义在于，可以写一份线程代码，通过key的方式多线程操作不同的数据。**
+
+###TIPS
+用这种方法实现的线程局部变量完全时适用于用户态的，试想其实可以将这些变量存到内核里，类似于task_struct那样，但是这样就会造成访问速度过慢的问题。。。
+
+##GLIBC实现下的TLS
+
+##开个小脑洞
+首先我们先来想下，如果让我们来实现类似TLS的功能，应该怎么做呢？第一我们知道线程创建时肯定时CLONE_VM的，也就和主进程共享内存空间的，也就意味着我们不可能用不同内存空间来隔离线程间的资源。第二，哈哈，线程在内核里面是有私有数据的，我们可以用这个来实现呀！！的确时可以的。。。不过上面已经讲过，这样必然会带来访问开销过大的问题！怎么办咧？那么我们还是得看下clone的系统调用内核的原型。。。请做好心理准备！
+
+	//kernel/fork.c 
+	1725 #ifdef __ARCH_WANT_SYS_CLONE
+	1726 #ifdef CONFIG_CLONE_BACKWARDS
+	1727 SYSCALL_DEFINE5(clone, unsigned long, clone_flags, unsigned long, newsp,
+	1728          int __user *, parent_tidptr,
+	1729          int, tls_val,
+	1730          int __user *, child_tidptr)
+	1731 #elif defined(CONFIG_CLONE_BACKWARDS2)
+	1732 SYSCALL_DEFINE5(clone, unsigned long, newsp, unsigned long, clone_flags,
+	1733          int __user *, parent_tidptr,
+	1734          int __user *, child_tidptr,
+	1735          int, tls_val)
+	1736 #elif defined(CONFIG_CLONE_BACKWARDS3)
+	1737 SYSCALL_DEFINE6(clone, unsigned long, clone_flags, unsigned long, newsp,
+	1738         int, stack_size,
+	1739         int __user *, parent_tidptr,
+	1740         int __user *, child_tidptr,
+	1741         int, tls_val)
+	1742 #else
+	1743 SYSCALL_DEFINE5(clone, unsigned long, clone_flags, unsigned long, newsp,
+	1744          int __user *, parent_tidptr,
+	1745          int __user *, child_tidptr,
+	1746          int, tls_val)
+	1747 #endif
+	1748 {  
+	1749     return do_fork(clone_flags, newsp, 0, parent_tidptr, child_tidptr);
+	1750 }  
+	1751 #endif
+
+╮(╯▽╰)╭果然不是想象的那么简单哈！为啥要这么麻烦的来定义系统调用咧！推荐大家去看下这篇博客啦<a href="http://blog.csdn.net/skyflying2012/article/details/9747969">linux内核SYSCALL_DEFINE分析</a></li>，真的是不得不感叹一句:他竟然把乾坤大挪移练到了第八层！？ 不好意思，扯了好多题外话。哈哈，我们发现clone参数里的newsp，也就是新线程的堆栈这边是可以利用的。。。因为它还算是线程为数不多的”私有化“程度还算高的一块内存。就决定时你了。那么我们就来看下新线程的用户态栈是怎么来的。（内核栈当然时内核负责分配的啦，thread_union thread_info，哈哈复习下，反正也没人看我博客）
+
+###pthread线程库&clone实现浅析（glic版本2.2.2）
+
+我们都知道clone系统调用可以创建轻进程(线程)而且有各种CLONE_FLAGS来控制各种资源。而pthread库实现线程创建也是本质上调用clone的。而pthread库在调用clone前，还另外做了很多事情，老规矩，还是来看下调用流程：
+
+	//nptl/pthread_create.c 
+	versioned_symbol (libpthread, __pthread_create_2_1, pthread_create, GLIBC_2_1);      //pthread_create 实际实现为__pthread_create_2_1，不过跟编译新glic的编译环境有关。
+	__pthread_create_2_1()---->ALLOCATE_STACK()------->create_thread()
+								|
+								|
+								|
+							    ARCH_CLONE()
+##参考目录
+[1] http://blog.csdn.net/lqk1985/article/details/2905259
+
+[2] http://www.cnblogs.com/stli/archive/2010/11/03/1867852.html
+[3] http://blog.163.com/william_djj@126/blog/static/3516650120085111193035/
