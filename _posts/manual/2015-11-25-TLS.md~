@@ -1,6 +1,6 @@
 ---
 layout: post
-title: Linux线程TLS（Thread-Local Storage）相关 GS段寄存器作用分析
+title: Linux线程TLS（Thread-Local Storage）相关 GS段寄存器作用分析 顺带简单分析了clone API的实现
 description: 2015.11.24 南京很冷
 category: manual
 ---
@@ -255,7 +255,7 @@ gs的值时0x33没错，先不着急，我们知道选择子也是有个格式�
 
 ##GLIBC实现下的TLS
 
-##开个小脑洞
+###开个小脑洞-----线程的"私有财产"
 首先我们先来想下，如果让我们来实现类似TLS的功能，应该怎么做呢？第一我们知道线程创建时肯定时CLONE_VM的，也就和主进程共享内存空间的，也就意味着我们不可能用不同内存空间来隔离线程间的资源。第二，哈哈，线程在内核里面是有私有数据的，我们可以用这个来实现呀！！的确时可以的。。。不过上面已经讲过，这样必然会带来访问开销过大的问题！怎么办咧？那么我们还是得看下clone的系统调用内核的原型。。。请做好心理准备！
 
 	//kernel/fork.c 
@@ -287,11 +287,11 @@ gs的值时0x33没错，先不着急，我们知道选择子也是有个格式�
 	1750 }  
 	1751 #endif
 
-╮(╯▽╰)╭果然不是想象的那么简单哈！为啥要这么麻烦的来定义系统调用咧！推荐大家去看下这篇博客啦<a href="http://blog.csdn.net/skyflying2012/article/details/9747969">linux内核SYSCALL_DEFINE分析</a></li>，真的是不得不感叹一句:他竟然把乾坤大挪移练到了第八层！？ 不好意思，扯了好多题外话。哈哈，我们发现clone参数里的newsp，也就是新线程的堆栈这边是可以利用的。。。因为它还算是线程为数不多的”私有化“程度还算高的一块内存。就决定时你了。那么我们就来看下新线程的用户态栈是怎么来的。（内核栈当然时内核负责分配的啦，thread_union thread_info，哈哈复习下，反正也没人看我博客）
+╮(╯▽╰)╭果然不是想象的那么简单哈！为啥要这么麻烦的来定义系统调用咧！推荐大家去看下这篇博客啦<a href="http://blog.csdn.net/skyflying2012/article/details/9747969">linux内核SYSCALL_DEFINE分析</a>，真的是不得不感叹一句:他竟然把乾坤大挪移练到了第八层！？ 不好意思，扯了好多题外话。**哈哈，我们发现clone参数里的newsp，也就是新线程的堆栈这边是可以利用的**。。。因为它还算是线程为数不多的”私有化“程度还算高的一块内存。就决定时你了。那么我们就来看下新线程的用户态栈是怎么来的。（内核栈当然时内核负责分配的啦，thread_union thread_info，哈哈复习下，反正也没人看我博客）
 
 ###pthread线程库&clone实现浅析（glic版本2.2.2）
 
-我们都知道clone系统调用可以创建轻进程(线程)而且有各种CLONE_FLAGS来控制各种资源。而pthread库实现线程创建也是本质上调用clone的。而pthread库在调用clone前，还另外做了很多事情，老规矩，还是来看下调用流程：
+我们都知道**clone系统调用可以创建轻进程(线程)而且有各种CLONE_FLAGS来控制各种资源。而pthread库实现线程创建也是本质上调用clone的。**而pthread库在调用clone前，还另外做了很多事情，老规矩，还是来看下调用流程：
 
 	//nptl/pthread_create.c 
 	versioned_symbol (libpthread, __pthread_create_2_1, pthread_create, GLIBC_2_1);      
@@ -305,11 +305,414 @@ gs的值时0x33没错，先不着急，我们知道选择子也是有个格式�
 	   |
 	   |
 	create_thread()------->ARCH_CLONE()
-									
-									    
+
+	//为了看的明白放下各个函数的原型
+	490 int        
+	491 __pthread_create_2_1 (newthread, attr, start_routine, arg)
+	492      pthread_t *newthread;    
+	493      const pthread_attr_t *attr;
+	494      void *(*start_routine) (void *);
+	495      void *arg; 
+
+	//nptl/allocatestack.c 
+	63 # define ALLOCATE_STACK(attr, pd) allocate_stack (attr, pd, &stackaddr) 
+
+	//sysdeps/unix/sysv/linux/createthread.c 
+	47 static int   
+	48 create_thread (struct pthread *pd, const struct pthread_attr *attr,
+	49            bool stopped_start, STACK_VARIABLES_PARMS, bool *thread_ran)
+	50 {
+	...............
+	...............
+	...............
+	 94   const int clone_flags = (CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SYSVSEM
+	 95                | CLONE_SIGHAND | CLONE_THREAD
+	 96                | CLONE_SETTLS | CLONE_PARENT_SETTID
+	 97                | CLONE_CHILD_CLEARTID
+	 98                | 0);
+	 99        
+	100   TLS_DEFINE_INIT_TP (tp, pd);
+	101        
+	102   if (__glibc_unlikely (ARCH_CLONE (&start_thread, STACK_VARIABLES_ARGS,
+	103                     clone_flags, pd, &pd->tid, tp, &pd->tid)
+	104             == -1))
+	.............
+	.............
+	154 }
+	//ARCH_CLONE就调用glibc下对应平台的clone啦
+
+我们这里就为了搞懂TLS的实现和一些东西，所以这里就不仔细分析了，各个细节了，详细内容也可以参考下这篇博客<a href="http://blog.csdn.net/yetyongjin/article/details/7673837">pthread_create线程创建的过程剖析</a>可以看到，pthread_create在为新线程申请用户栈时，其实还做了其他的一些工作，简单的说就是申请了大于栈需求的空间，部分用作栈空间，而剩下的作为其他用处，其中就有TLS的空间。根据上篇博客，这块内存应该是这么个布局[4]
+***
+![stack TLS](/images/stack+TLS.jpg)
+
+**TLS的地址其实就是pthread pb结构的地址啦**。。。好了现在TLS的内存空间是有了，那应该怎么样来进一步设计才能达到刚刚我们说的线程隔离的功能呢？要知道如果多线程的实现函数时同一个的话，它在编码上是完全一样的，也就时说线程代码都是一样的！！还让不让它有点“隐私”了？？
+
+###线程真正的"私有财产"	-----寄存器
+
+刚刚说到，线程的用户态算是它为数不多的“私有财产“，但是这个”私有化“程度其实还没有那么高，因为都是和主进程和其他兄弟线程共享的嘛。那怎么办呢？**但是！不要忘了！！！！线程切换都要干嘛？切换硬件上下文！寄存器才是线程真正的私有财产！！** 哈哈，主角终于要来啦！我困惑多年的问题就要得到解决了！ 没错，**可以通过寄存器来实现线程的资源”隔离”**，试着回想下，intel为了隔离资源，发明了保护模式(分段，分页)（我的理解，讲的不对请指正），而现在线程就是在保护模式下，分页就不想了，因为CLONE_VM了页表共享了嘛。那唯一的手段就是用**分段**啦！
+
+
+我们知道intel x86处理器是有几个段寄存器的：
+<ul>
+<li>代码段寄存器CS（Code Segment）
+存放当前正在运行的程序代码所在段的段基址，表示当前使用的指令代码可以从该段寄存器指定的存储器段中取得，相应的偏移量则由IP提供。</li>
+<li>数据段寄存器DS（Data Segment）
+指出当前程序使用的数据所存放段的最低地址，即存放数据段的段基址。</li>
+<li>堆栈段寄存器SS（Stack Segment）
+指出当前堆栈的底部地址，即存放堆栈段的段基址。</li>
+<li>附加段寄存器ES（Extra Segment）
+指出当前程序使用附加数据段的段基址，该段是串操作指令中目的串所在的段。</li>
+<ul>
+而这些都已经有特定的用处了，不要慌！**FS、GS 是从80386开始增加的，没有全称，取名就是按字母序排在 CS、DS、ES 之后的。**就是这样！inte爸爸对这两个段寄存器连起名字都这么随意，不要说对功能的定义了。是的，这两个寄存器并没有提供明确的功能定义，这就给了我们可乘之机！
+
+###解决方案
+
+现在我们的任务就比较明确了，我们有了一个比较私有化的内存，一个完全私有化的段寄存器！**(而分段机制如果要工作是要进入保护模式的，而进入保护模式就要打开cr0寄存器的PE位，而在此之前还要打开A20地址线，而要分页还要打开cr0寄存器的PG位)--我就自己复习下，不要管我**上述工作已经由操作系统完成了，这盛世，如你所愿！废话不说，我们来看看要完成我们的任务要做什么？其实不难：
+<ul>
+<li>第一：就是把TLS也就是pthread所在的地址转换成一个段描述子，并放到GDT里面。</li>
+<li>第二：设置gs或者fs寄存器，里面的选择子应该得指向TLS的描述子</li>
+<ul>
+
+好的，怎么做也明确了，我们来看下代码吧！刚刚已经看到pthread_create已经申请了内存，并已经对内存做了一些初始化，**然后就调用了clone系统调用,参数是线程的实务函数以及函数参数等，另外包括了TLS的地址**，我们就来看下glibc的clone实现：
+
+	 //sysdeps/unix/sysv/linux/i386/clone.S    (glibc)
+	 27 /* int clone(int (*fn)(void *arg), void *child_stack, int flags, void *arg,
+	 28          pid_t *ptid, struct user_desc *tls, pid_t *ctid); */
+	 29    
+	 30 #define PARMS   4       /* no space for saved regs */
+	 31 #define FUNC    PARMS
+	 32 #define STACK   FUNC+4
+	 33 #define FLAGS   STACK+4
+	 34 #define ARG FLAGS+4
+	 35 #define PTID    ARG+4
+	 36 #define TLS PTID+4
+	 37 #define CTID    TLS+4
+	 38    
+	 39 #define __NR_clone 120
+	 40 #define SYS_clone 120
+	 41    
+	 42 #define CLONE_VM    0x00000100
+	 43 #define CLONE_THREAD    0x00010000
+	 44    
+	 45         .text
+	 46 ENTRY (__clone)
+	 47     /* Sanity check arguments.  */
+	 48     movl    $-EINVAL,%eax
+	 49     movl    FUNC(%esp),%ecx     /* no NULL function pointers */
+	 50 #ifdef PIC
+	 51     jecxz   SYSCALL_ERROR_LABEL
+	 52 #else
+	 53     testl   %ecx,%ecx
+	 54     jz  SYSCALL_ERROR_LABEL
+	 55 #endif
+	 56     movl    STACK(%esp),%ecx    /* no NULL stack pointers */
+	 57 #ifdef PIC
+	 58     jecxz   SYSCALL_ERROR_LABEL
+	 59 #else
+	 60     testl   %ecx,%ecx
+	 61     jz  SYSCALL_ERROR_LABEL
+	 62 #endif
+	 63    
+	 64     /* Insert the argument onto the new stack.  Make sure the new
+	 65        thread is started with an alignment of (mod 16).  */
+	 66     andl    $0xfffffff0, %ecx
+	 67     subl    $28,%ecx
+	 68     movl    ARG(%esp),%eax      /* no negative argument counts */
+	 69     movl    %eax,12(%ecx)
+	 70    
+	 71     /* Save the function pointer as the zeroth argument.
+	 72        It will be popped off in the child in the ebx frobbing below.  */
+	 73     movl    FUNC(%esp),%eax
+	 74     movl    %eax,8(%ecx)
+	 75     /* Don't leak any information.  */
+	 76     movl    $0,4(%ecx)
+	 77     
+	 78     /* Do the system call */
+	 79     pushl   %ebx
+	 80     cfi_adjust_cfa_offset (4)
+	 81     pushl   %esi
+	 82     cfi_adjust_cfa_offset (4)
+	 83     pushl   %edi
+	 84     cfi_adjust_cfa_offset (4)
+	 85     
+	 86     movl    TLS+12(%esp),%esi
+	 87     cfi_rel_offset (esi, 4)
+	 88     movl    PTID+12(%esp),%edx
+	 89     movl    FLAGS+12(%esp),%ebx
+	 90     cfi_rel_offset (ebx, 8)
+	 91     movl    CTID+12(%esp),%edi
+	 92     cfi_rel_offset (edi, 0)
+	 93     movl    $SYS_ify(clone),%eax
+	 94     
+	 95     /* Remember the flag value.  */
+	 96     movl    %ebx, (%ecx)
+	 97     
+	 98     /* End FDE now, because in the child the unwind info will be
+	 99        wrong.  */
+	100     cfi_endproc
+	101     
+	102     int $0x80
+	................................
+	...................
+	............
+	...
+
+**这是32位的实现，如果是64位差别还是有的。**因为系统调用是要进入到内核的，涉及到上下文切换，堆栈也会从用户栈切换到内核栈，所以参数只能用寄存器来传。这里的话特别注意下line86，**就会将TLS的地址存入esi寄存器**；line93，将clone的系统调用号存到eax；**line102，软中断陷入内核，这时候就会进行博文一开始的软中断处理例程以及SAVE_ALL**内核根据系统调用号进行sys_clone系统调用处理例程，刚刚已经看过定义了，**但是还有个东西要提下！！！**我们把宏展开后就是这样的：
+
+	1743 SYSCALL_DEFINE5(clone, unsigned long, clone_flags, unsigned long, newsp,
+	1744          int __user *, parent_tidptr,
+	1745          int __user *, child_tidptr,
+	1746          int, tls_val)
+	
+	//宏展开后
+	asmlinkage long sys_clone(unsigned long clone_flags, unsigned long newsp,
+		int __user* parent_tidptr,int __user* child_tidptr,int tls_val)
+	{
+		return do_fork(clone_flags, newsp, 0, parent_tidptr, child_tidptr);
+	}
+
+	 9 #ifdef CONFIG_X86_32
+ 	10 #define asmlinkage CPP_ASMLINKAGE __attribute__((regparm(0)))   
+
+要说的就是这里的asmlinkage，这是个gcc的C扩展，主要是用来告诉编译器，**当前修饰的函数强制使用堆栈传参，因为刚刚SAVE_ALL了嘛**。关于asmlinkage可以参考<a href="http://www.cnblogs.com/china_blue/archive/2010/01/15/1648523.html">关于asmlinkage</a>
+
+这个问题只是提下，为了自己复习用的，**主要还是看这里的do_fork，tls_val参数时没有被使用的！！这也是我这几天来的疑惑，因为我不知道到底tls的描述子是怎么设置的！！**但是我们看下pthread_create的时候是设置了CLONE_SETTLS,那么do_fork肯定时对这个标志有处理的！关于这个处理它是在do_fork--->copy_process--->copy_thread里面处理的！！
+
+	132 int copy_thread(unsigned long clone_flags, unsigned long sp,
+	133     unsigned long arg, struct task_struct *p)
+	134 {  
+	135     struct pt_regs *childregs = task_pt_regs(p);
+	136     struct task_struct *tsk;
+	137     int err;
+	138    
+	//设置task_struct里的thread_struct，该结构保存线程一部分的硬件上下文
+	139     p->thread.sp = (unsigned long) childregs;	//当前内核栈栈顶偏移
+	140     p->thread.sp0 = (unsigned long) (childregs+1);	//内核栈栈底偏移
+	141     memset(p->thread.ptrace_bps, 0, sizeof(p->thread.ptrace_bps));
+	142    
+	143     if (unlikely(p->flags & PF_KTHREAD)) {
+		...........
+		...........		
+		////对内核线程的处理
+		...........
+		...........
+		return 0;
+	158     }
+	159     *childregs = *current_pt_regs();
+	160     childregs->ax = 0;
+	161     if (sp)
+	162         childregs->sp = sp;
+	163    
+	........................
+	.............
+	.......
+	184      * Set a new TLS for the child thread?
+	185      */
+	186     if (clone_flags & CLONE_SETTLS)
+	187         err = do_set_thread_area(p, -1,
+	188             (struct user_desc __user *)childregs->si, 0);
+	189    
+	190     if (err && p->thread.io_bitmap_ptr) {
+	191         kfree(p->thread.io_bitmap_ptr);
+	192         p->thread.io_bitmap_max = 0;
+	193     }
+	194     return err;
+	195 }  
+
+这个函数的话我自己已经分析过了，也是个很重要的函数，以后有空了我把笔记本的东西搬上博客看看吧！**简单说下这里的childregs是指向了线程的内核栈地址！！**这里还是主要看关于CLONE_SETTLS的处理，看到line187的do_set_thread_area入参时的(struct user_desc __user *)childregs->si，这里是**clone系统调用SAVE\_ALL时esi寄存器，和上面的完全吻合**！！
+
+	//arch/x86/kernel/tls.c 
+	112 int do_set_thread_area(struct task_struct *p, int idx,
+	113                struct user_desc __user *u_info,
+	114                int can_allocate)
+	115 {   
+	116     struct user_desc info;
+	117     
+	118     if (copy_from_user(&info, u_info, sizeof(info)))
+	119         return -EFAULT;
+	120     
+	...............
+	...........
+	.........
+	131     if (idx == -1 && can_allocate) {
+	132         idx = get_free_idx();	//寻找一个空项
+	133         if (idx < 0)
+	134             return idx;
+	135         if (put_user(idx, &u_info->entry_number))
+	136             return -EFAULT;
+	137     }
+	138     
+	139     if (idx < GDT_ENTRY_TLS_MIN || idx > GDT_ENTRY_TLS_MAX)
+	140         return -EINVAL;
+	141     
+	142     set_tls_desc(p, idx, &info, 1);
+	143     
+	144     return 0;
+	145 }
+
+	 82 static void set_tls_desc(struct task_struct *p, int idx,
+	 83              const struct user_desc *info, int n)
+	 84 {  
+	 85     struct thread_struct *t = &p->thread;
+	 86     struct desc_struct *desc = &t->tls_array[idx - GDT_ENTRY_TLS_MIN];//！！！！！！！
+	 87     int cpu;
+	 88    
+	 89     /*
+	 90      * We must not get preempted while modifying the TLS.
+	 91      */
+	 92     cpu = get_cpu();
+	 93    
+	 94     while (n-- > 0) {
+	 95         if (LDT_empty(info) || LDT_zero(info))
+	 96             desc->a = desc->b = 0;
+	 97         else
+	 98             fill_ldt(desc, info);
+	 99         ++info;
+	100         ++desc;  
+	101     }            
+	102    
+	103     if (t == &current->thread)
+	104         load_TLS(t, cpu);
+	105    
+	106     put_cpu();   
+	107 }  
+注意下do_set_thread_area的line 135，会把分配到的idx告知给用户空间。特别要注意set_tls_desc的第86行，可以看到是通过line98 fill\_ldt(desc, info)把选择子先设置到线程task\_struct的thread\_struct里的tls_array数组里面的。如果是正在运行的进程在企图设置TLS段，那么就要刷新GDT中的TLS描述子(line104)load\_TLS这个函数时再一开始的\_\_switch_to里就看到过的，我们一会再分析。
+
+	 //arch/x86/include/asm/desc.h  
+	 11 static inline void fill_ldt(struct desc_struct *desc, const struct user_desc *info) 
+	 12 {            
+	 13     desc->limit0        = info->limit & 0x0ffff;
+	 14     
+	 15     desc->base0     = (info->base_addr & 0x0000ffff);
+	 16     desc->base1     = (info->base_addr & 0x00ff0000) >> 16;
+	 17  
+	 18     desc->type      = (info->read_exec_only ^ 1) << 1;
+	 19     desc->type         |= info->contents << 2;
+	 20     
+	 21     desc->s         = 1;
+	 22     desc->dpl       = 0x3;
+	 23     desc->p         = info->seg_not_present ^ 1;
+	 24     desc->limit     = (info->limit & 0xf0000) >> 16;
+	 25     desc->avl       = info->useable;
+	 26     desc->d         = info->seg_32bit;
+	 27     desc->g         = info->limit_in_pages;
+	 28  
+	 29     desc->base2     = (info->base_addr & 0xff000000) >> 24;
+	 30     /*       
+	 31      * Don't allow setting of the lm bit. It would confuse
+	 32      * user_64bit_mode and would get overridden by sysret anyway.
+	 33      */
+	 34     desc->l         = 0;
+	 35 }  
+
+这个函数就是根据info来在thread_struct里面构建一个描述子。
+
+###任务的终了
+
+现在我们已经把选择子构建好了，离glibc执行clone系统调用已经一段时间了，等整个线程新建好后，就会在某个时刻被调度到，那就是回到一开始的\_\_switch_to了，我们也知道为什么要吧gs设置成0x33了，就是为了指向TLS段。而这里的load_TLS我们也知道时要干嘛了，就用来刷新GDT表。我们还是来看下：
+
+	//arch/x86/include/asm/desc.h 
+	101 #define load_TLS(t, cpu)            native_load_tls(t, cpu)   
+
+	245 static inline void native_load_tls(struct thread_struct *t, unsigned int cpu) 
+	246 {
+	247     struct desc_struct *gdt = get_cpu_gdt_table(cpu);
+	248     unsigned int i;
+	249  
+	250     for (i = 0; i < GDT_ENTRY_TLS_ENTRIES; i++)
+	251         gdt[GDT_ENTRY_TLS_MIN + i] = t->tls_array[i];
+	252 }
+
+目的很明确，**就是把thread_struct里面的tls\_array的值复制给当前CPU的GDT表！！！**接着就是lazy_load_gs恢复gs(感觉所有进程的gs都一样吧？？)这样所有东西就全部完成了！！还需要经过其他的一些内核处理，接下来就是回到用户空间了，这个时候因为是复制了大部分主进程的内核栈(copy_thread)，所以肯定还是得回到当初进入内核的地方！也就是clone系统调用的代码:
+
+	//sysdeps/unix/sysv/linux/i386/clone.S    (glibc)
+	103     popl    %edi
+	104     popl    %esi
+	105     popl    %ebx
+	106     
+	107     test    %eax,%eax
+	108     jl  SYSCALL_ERROR_LABEL
+	109     jz  L(thread_start)
+	110     
+	111     ret
+	112     
+	113 L(thread_start):
+	114     cfi_startproc;
+	115     /* Clearing frame pointer is insufficient, use CFI.  */
+	116     cfi_undefined (eip);
+	117     /* Note: %esi is zero.  */
+	118     movl    %esi,%ebp   /* terminate the stack frame */
+	119     testl   $CLONE_THREAD, %edi
+	120     je  L(newpid)
+	121 L(haspid):
+	122     call    *%ebx
+	123 #ifdef PIC
+	124     call    L(here)
+	125 L(here):
+	126     popl    %ebx
+	127     addl    $_GLOBAL_OFFSET_TABLE_+[.-L(here)], %ebx
+	128 #endif
+	129     movl    %eax, %ebx
+	130     movl    $SYS_ify(exit), %eax
+	131     ENTER_KERNEL
+	132    
+	133     .subsection 2
+	134 L(newpid):
+	135     testl   $CLONE_VM, %edi
+	136     movl    $-1, %eax
+	137     jne L(nomoregetpid)
+	138     movl    $SYS_ify(getpid), %eax
+	139     ENTER_KERNEL
+	140 L(nomoregetpid):
+	141     movl    %eax, %gs:PID
+	142     movl    %eax, %gs:TID
+	143     jmp L(haspid)
+	144     .previous
+	145     cfi_endproc;
+	146    
+	147     cfi_startproc
+	148 PSEUDO_END (__clone)
+	149  
+	150 weak_alias (__clone, clone)  
+
+刚出来就是三个pop先不不管，接着就是比对eax寄存器，如果时主进程返回创建的线程pid号，如果是线程自己就返回0**(clone函数返回两个不同的值，作怪的还是copy_thread)**,接下来就是主进程和线程各会各家，各找各妈了。
+
+##特别说明1
+
+这里clone是如何跳到线程执行函数里的呢？？主要时clone系统调用一开始就将函数fn的地址和参数args放到新线程的用户栈上了，所以当线程从内核返回再进入clone执行完工作后再ret就到了fn的地方啦！！！
+
+	 //sysdeps/unix/sysv/linux/i386/clone.S    (glibc)
+	 64     /* Insert the argument onto the new stack.  Make sure the new
+	 65        thread is started with an alignment of (mod 16).  */
+	 66     andl    $0xfffffff0, %ecx
+	 67     subl    $28,%ecx
+	 68     movl    ARG(%esp),%eax      /* no negative argument counts */
+	 69     movl    %eax,12(%ecx)
+
+##特别说明2
+
+我曾经不小心的分析了64位glibc的实现，发现TLS段选择子应该时放在fs段寄存器里的。但是用gdb调试打印寄存器信息的时候fs和gs段寄存器都是0x0！这里是有个问题了。。。。以后专门看64位实现吧。
+
+##我是怎么"误入歧途"的
+
+其实这篇博客本来是不会存在的，也提到主要时分析\_\_switch\_to是碰到了gs和TLS的问题，所以就稍微看了下，这里面碰到最大的问题就是我知道TLS段描述子是从thread_struct里面恢复的，但是我不知道这个东西是什么时候存到thread_struct里面的，因为sys_clone调用do_fork的时候并没有传tls_val参数。而thread_struct肯定是在内核里设置的啊！！所以我一直在找，去看glibc的实现，从中找看有没有一个专门的一个系统调用来设置进程的thread_struct，显然我失败了。。。后来就发现了copy_thread。
+
+在此期间的思路就是：看到了gs知道其是为TLS实现服务的，从load_TLS得知是从thread_struct里面读取的，反推去找设置thread_struct的位置。
+
+##总结
+
+这篇博文讲了还蛮多的，稍微提及了下线程的创建过程，系统调用的相关东西，最主要的还是TLS段。而linux+glibc的TLS实现简单来说的流程就是：
+<ul>
+<li>pthread_create申请内存，一部分作为栈，一部分为TCB，一部分为TLS。</li>
+<li>将TLS的地址放到寄存器并系统调用到内核，这时候寄存器的值在内核栈上。</li>
+<li>copy_thread如果有需要从栈上取到这个地址，从gdt得到一个空项idx，并根据TLS地址构建描述子放到新线程的task_struct->thread_struct里面</li>
+<li>在任务切换时用lazy_load_gs恢复gs，load_TLS从thread_struct读描述子刷新GDT</li>
+</ul>
 ##参考目录
 [1] http://blog.csdn.net/lqk1985/article/details/2905259
 
 [2] http://www.cnblogs.com/stli/archive/2010/11/03/1867852.html
 
 [3] http://blog.163.com/william_djj@126/blog/static/3516650120085111193035/
+
+[4] http://blog.csdn.net/yetyongjin/article/details/7673837
