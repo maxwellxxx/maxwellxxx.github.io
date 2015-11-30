@@ -695,7 +695,7 @@ gs的值是0x33没错，先不着急，我们知道选择子也是有个格式�
 
 ##最后的验证
 
-最后还是要验证下实际编程条件下的内存情况....可以参考这篇博客<a href="http://blog.csdn.net/dog250/article/details/7704898">关于Linux线程的线程栈以及TLS</a>
+最后还是要验证下实际编程条件下的内存情况....可以参考这篇博客<a href="http://blog.csdn.net/dog250/article/details/7704898">关于Linux线程的线程栈以及TLS</a>。 另外这里还要讲一下，其实在64位中gs和fs都是0.
 
 ##我是怎么"误入歧途"的
 
