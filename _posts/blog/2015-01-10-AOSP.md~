@@ -21,16 +21,18 @@ android镜像1
 
 
 ##TUNA
-清华大学 android源代码
-仓库地址：
+因为好久没有关注android方面的东西，TUNA那边好像对服务器做了好多调整，这里就直接给出那边的地址了，具体教程TUNA官方给出的文档比我详尽的多，这里就偷懒了。
 
-	git://aosp.tuna.tsinghua.edu.cn/android/
+TUNA地址
 
+	http://mirrors.tuna.tsinghua.edu.cn/
 
-使用浏览器访问：
+android同步方法
 
-	http://aosp.tuna.tsinghua.edu.cn/android/
-	http://aosp.tuna.tsinghua.edu.cn/
+	http://mirrors.tuna.tsinghua.edu.cn/help/#AOSP
+
+如果是CM（cyanogenmod）的相关仓库同步可能会需要AOSP相关代码，可以参照我的另外一片博文“编译完整CM至HTC ONE（m7 gsm）”，定向到TUNA的方法应该是差不多的。
+
 
 ##FOR ME
 android中古版本目录详细分析
@@ -38,4 +40,4 @@ android中古版本目录详细分析
 	http://www.cnblogs.com/yyangblog/archive/2011/03/02/1968880.html 目录详解
 
 ##ENEN
-最后，不得不说，清华是个好大学！IPV6速度简直飞起来!
+最后，不得不说，清华是个好大学！IPV6速度简直飞起来!TUNA的各位同学辛苦了，祝新年快乐！
