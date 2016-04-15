@@ -89,7 +89,7 @@ openstack中项目都是通过RESTful API向外提供服务，什么是RESTful�
 Openstack中使用的RESTful路由模块是Routes，是对Rails on Ruby的重新实现，其使用方式可以参考<a href="http://blog.csdn.net/tantexian/article/details/37879939">wsgi-restful-routes详解</a>。
 
 ##根据Openstack进行相关分析
-有了上文的基础，可以想象下Nova组件是如何响应HTTP请求的，其大致流程应该如下所述：WSGI Server接收到HTTP请求；根据Server上的Nova app生成所使用的配置文件，将HTTP请求路由到相应的“应用”上（这里指的应用就是可调用的Python对象）;根据“应用”中Routes定义的路由规则，将请求路由到相应资源的不同操作函数上。
+有了上文的基础，可以想象下Nova组件是如何响应HTTP请求的，其大致流程应该如下所述：__WSGI Server接收到HTTP请求；根据Server上的Nova app生成所使用的配置文件，将HTTP请求路由到相应的“应用”上（这里指的应用就是可调用的Python对象）;根据“应用”中Routes定义的路由规则，将请求路由到相应资源的不同操作函数上。__
 
 参考<a href="http://blog.csdn.net/tantexian/article/details/37740379">paste从ini配置文件->routesr具体发布流程</a>可以看到nova响应请求时的流程。
 
