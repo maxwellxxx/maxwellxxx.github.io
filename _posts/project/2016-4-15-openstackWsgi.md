@@ -203,7 +203,7 @@ Routes初始化时机一般在类__init__中，比如openstack中，就使用API
 	[app:root]
 	paste.app_factory = testroutes:Router.app_factory
 
-其中构建应用时，工厂函数定义的类就会被首先实例化，并执行类中定义的__init__。而且实例化的类在应用的生命周期中都不会被销毁，即以后调用工厂函数时，仅仅调用工厂函数，并不会再次实例化类，此点再下节中做出证明。
+其中构建应用时，工厂函数定义的类就会被首先实例化，并执行类中定义的\_\_init\_\_。而且实例化的类在应用的生命周期中都不会被销毁，即以后调用工厂函数时，仅仅调用工厂函数，并不会再次实例化类，此点再下节中做出证明。
 
 4
 
@@ -327,14 +327,14 @@ Openstack的WSGI接口通过webob,pastedeploy,routes实现了Controller类，和
 	[app:root]
 	paste.app_factory = testroutes:Router.app_factory
 
-由此可见，ini文件按照pastedeploy的模式配置了根目录/，指向pipeline show，pipeline又指向app root。app下指向的是Router的app_factory函数，返回的是Router().根据调用过程，初始化__init__->__call__返回self._routers.根据__init__下写的映射规则，能识别类似/test/123这样的路径，其处理函数调用"Controller"的"action"函数，也就是getMessage。
+由此可见，ini文件按照pastedeploy的模式配置了根目录/，指向pipeline show，pipeline又指向app root。app下指向的是Router的app_factory函数，返回的是Router().根据调用过程，初始化__init__->__call__返回self._routers.根据\_\_init\_\_下的映射规则，能识别类似/test/123这样的路径，其处理函数调用"Controller"的"action"函数，也就是getMessage。
 
-测试运行，在浏览器下输入127.0.0,1:8282/test/123，返回OK。而这里的OK是不是getMessage返回的，而是Controller的__call__返回。
+测试运行，在浏览器下输入127.0.0,1:8282/test/123，返回OK。而这里的OK是不是getMessage返回的，而是由Controller的\_\_call\_\_返回。
 
 ###验证
 运行后，在浏览器中不停刷新127.0.0,1:8282/test/123，可以看到控制台输出如下：
-➜  wsgi python testroutes.py
 
+	$ wsgi python testroutes.py
 	test1
 	test2
 	127.0.0.1 - - [15/Apr/2016 16:41:51] "GET /test/123 HTTP/1.1" 200 5

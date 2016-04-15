@@ -327,14 +327,14 @@ Openstack的WSGI接口通过webob,pastedeploy,routes实现了Controller类，和
 	[app:root]
 	paste.app_factory = testroutes:Router.app_factory
 
-由此可见，ini文件按照pastedeploy的模式配置了根目录/，指向pipeline show，pipeline又指向app root。app下指向的是Router的app_factory函数，返回的是Router().根据调用过程，初始化__init__->__call__返回self._routers.根据__init__下写的映射规则，能识别类似/test/123这样的路径，其处理函数调用"Controller"的"action"函数，也就是getMessage。
+由此可见，ini文件按照pastedeploy的模式配置了根目录/，指向pipeline show，pipeline又指向app root。app下指向的是Router的app_factory函数，返回的是Router().根据调用过程，初始化__init__->__call__返回self._routers.根据\_\_init\_\_下的映射规则，能识别类似/test/123这样的路径，其处理函数调用"Controller"的"action"函数，也就是getMessage。
 
-测试运行，在浏览器下输入127.0.0,1:8282/test/123，返回OK。而这里的OK是不是getMessage返回的，而是Controller的__call__返回。
+测试运行，在浏览器下输入127.0.0,1:8282/test/123，返回OK。而这里的OK是不是getMessage返回的，而是由Controller的\_\_call\_\_返回。
 
 ###验证
 运行后，在浏览器中不停刷新127.0.0,1:8282/test/123，可以看到控制台输出如下：
-➜  wsgi python testroutes.py
 
+	$ wsgi python testroutes.py
 	test1
 	test2
 	127.0.0.1 - - [15/Apr/2016 16:41:51] "GET /test/123 HTTP/1.1" 200 5
@@ -352,7 +352,7 @@ Openstack的WSGI接口通过webob,pastedeploy,routes实现了Controller类，和
 可见，工厂函数对应的类确实仅实例化一次。
 
 ##后记
-仅作为笔记
+仅作为笔记.
 
 ##参考目录
 [1] http://blog.csdn.net/tantexian/article/details/41547651
