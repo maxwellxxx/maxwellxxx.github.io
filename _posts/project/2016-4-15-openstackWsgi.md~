@@ -110,7 +110,7 @@ Openstack中使用的RESTful路由模块是Routes，是对Rails on Ruby的重新
 在这种paste配置文件中use后的“/blog = blog”，“document_root = %(here)s/htdocs”都是作为use调用函数的参数。
 
 2.Routes的初始化时机
-Routes初始化时机一般在类__init__中，比如openstack中，就使用APIRouter类作为API的入口点，如Nova中
+Routes初始化时机一般在类\_\_init\_\_中，比如openstack中，就使用APIRouter类作为API的入口点，如Nova中
 
 	 nova/api/openstack/compute/__init__.py
 	 51 class APIRouter(nova.api.openstack.APIRouter):
@@ -185,9 +185,9 @@ Routes初始化时机一般在类__init__中，比如openstack中，就使用API
 	 76 [app:osapi_compute_app_legacy_v2]
 	 77 paste.app_factory = nova.api.openstack.compute:APIRouter.factory
 
-由于是工厂函数，那么APIRouter类在应用生成时就已经初始化，即APIRouter.__init__会最先得到执行，这时候就已经定义了Routes的RESTful API路由规则，此后在调用osapi_compute_app_legacy_v2响应请求时，仅仅调用类的cls()，而APIRouter又继承base_wsgi.Router，那么__call__则由Router类定义，所作工作就是根据路由规则路由到相应的controller，从而由Controller执行对应action的函数。
+由于是工厂函数，那么APIRouter类在应用生成时就已经初始化，即APIRouter.\_\_init\_\_会最先得到执行，这时候就已经定义了Routes的RESTful API路由规则，此后在调用osapi_compute_app_legacy_v2响应请求时，仅仅调用类的cls()，而APIRouter又继承base_wsgi.Router，那么\_\_call\_\_则由Router类定义，所作工作就是根据路由规则路由到相应的controller，从而由Controller执行对应action的函数。
 
-由此可见APIRouter类的存在完成了RESTful的路由规则定义(__init__)以及分发工作(__call__)。
+由此可见APIRouter类的存在完成了RESTful的路由规则定义(\_\_init\_\_函数)以及分发工作(\_\_call\_\_函数)。
 
 3.paste中的工厂函数，如：
 	  
@@ -203,7 +203,7 @@ Routes初始化时机一般在类__init__中，比如openstack中，就使用API
 	[app:root]
 	paste.app_factory = testroutes:Router.app_factory
 
-其中构建应用时，工厂函数定义的类就会被首先实例化，并执行类中定义的__init__。而且实例化的类在应用的生命周期中都不会被销毁，即以后调用工厂函数时，仅仅调用工厂函数，并不会再次实例化类，此点再下节中做出证明。
+其中构建应用时，工厂函数定义的类就会被首先实例化，并执行类中定义的\_\_init\_\_。而且实例化的类在应用的生命周期中都不会被销毁，即以后调用工厂函数时，仅仅调用工厂函数，并不会再次实例化类，此点再下节中做出证明。
 
 4
 
@@ -327,7 +327,7 @@ Openstack的WSGI接口通过webob,pastedeploy,routes实现了Controller类，和
 	[app:root]
 	paste.app_factory = testroutes:Router.app_factory
 
-由此可见，ini文件按照pastedeploy的模式配置了根目录/，指向pipeline show，pipeline又指向app root。app下指向的是Router的app_factory函数，返回的是Router().根据调用过程，初始化__init__->__call__返回self._routers.根据\_\_init\_\_下的映射规则，能识别类似/test/123这样的路径，其处理函数调用"Controller"的"action"函数，也就是getMessage。
+由此可见，ini文件按照pastedeploy的模式配置了根目录/，指向pipeline show，pipeline又指向app root。app下指向的是Router的app_factory函数，返回的是Router().根据调用过程，初始化\_\_init\_\_->\_\_call\_\_返回self._routers.根据\_\_init\_\_下的映射规则，能识别类似/test/123这样的路径，其处理函数调用"Controller"的"action"函数，也就是getMessage。
 
 测试运行，在浏览器下输入127.0.0,1:8282/test/123，返回OK。而这里的OK是不是getMessage返回的，而是由Controller的\_\_call\_\_返回。
 
