@@ -187,7 +187,7 @@ Routes初始化时机一般在类\_\_init\_\_中，比如openstack中，就使�
 
 由于是工厂函数，那么APIRouter类在应用生成时就已经初始化，即APIRouter.\_\_init\_\_会最先得到执行，这时候就已经定义了Routes的RESTful API路由规则，此后在调用osapi_compute_app_legacy_v2响应请求时，仅仅调用类的cls()，而APIRouter又继承base_wsgi.Router，那么\_\_call\_\_则由Router类定义，所作工作就是根据路由规则路由到相应的controller，从而由Controller执行对应action的函数。
 
-由此可见APIRouter类的存在完成了RESTful的路由规则定义(\_\_init\_\_函数)以及分发工作(\_\_call\_\_函数)。
+__由此可见APIRouter类的存在完成了RESTful的路由规则定义(\_\_init\_\_函数)以及分发工作(\_\_call\_\_函数),是openstack API接口的关键所在__。
 
 3.paste中的工厂函数，如：
 	  
